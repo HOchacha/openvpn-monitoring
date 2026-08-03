@@ -62,30 +62,6 @@ vet:
 	$(GO) vet ./...
 	@test -z "$$(gofmt -l ./cmd ./internal)" || { echo "gofmt needed:"; gofmt -l ./cmd ./internal; exit 1; }
 
-## dist: build a release tarball for deploying to a VPN server
-.PHONY: dist
-dist: build
-	@rm -rf dist/ovpnmon-$(VERSION)
-	@# Listed separately: make runs /bin/sh, and dash has no brace expansion.
-	@mkdir -p dist/ovpnmon-$(VERSION)/bin \
-	          dist/ovpnmon-$(VERSION)/etc \
-	          dist/ovpnmon-$(VERSION)/systemd
-	install -m 755 $(BIN) dist/ovpnmon-$(VERSION)/bin/ovpnmon
-	install -m 755 deploy/ovpn-firewall.sh dist/ovpnmon-$(VERSION)/bin/ovpn-firewall
-	install -m 644 deploy/ovpnmon.conf dist/ovpnmon-$(VERSION)/etc/ovpnmon.conf
-	install -m 644 deploy/ovpnmon.service dist/ovpnmon-$(VERSION)/systemd/ovpnmon.service
-	install -m 755 deploy/dist-install.sh dist/ovpnmon-$(VERSION)/install.sh
-	install -m 755 deploy/preflight.sh dist/ovpnmon-$(VERSION)/preflight.sh
-	install -m 644 README.md dist/ovpnmon-$(VERSION)/README.md
-	@# Prometheus and Grafana are optional, but the files have to travel with
-	@# the tarball or a server that only received the tarball cannot set them up.
-	cp -r deploy/observability dist/ovpnmon-$(VERSION)/observability
-	tar -C dist -czf dist/ovpnmon-$(VERSION).tar.gz ovpnmon-$(VERSION)
-	@rm -rf dist/ovpnmon-$(VERSION)
-	@echo
-	@echo "  dist/ovpnmon-$(VERSION).tar.gz  ($$(du -h dist/ovpnmon-$(VERSION).tar.gz | cut -f1))"
-	@echo "  Copy to the VPN server, then: tar xzf ... && sudo ./ovpnmon-$(VERSION)/preflight.sh"
-
 ## preflight: check whether this host can run ovpnmon, changing nothing
 .PHONY: preflight
 preflight:
@@ -109,6 +85,14 @@ server:
 ## install: install into $(PREFIX), keeping an existing config (root)
 .PHONY: install
 install: build
+	@# Refuse rather than half-installing onto a kernel that cannot load the
+	@# probe. Failing here is far easier to act on than an attach error later.
+	@test -r /sys/kernel/btf/vmlinux || { \
+		echo "no /sys/kernel/btf/vmlinux: this kernel was built without BTF" >&2; \
+		exit 1; }
+	@printf '6.6\n%s\n' "$$(uname -r | cut -d- -f1)" | sort -VC || { \
+		echo "kernel $$(uname -r) is too old: TCX attachment needs 6.6 or newer" >&2; \
+		exit 1; }
 	sudo install -d -m 755 $(PREFIX)/bin $(PREFIX)/etc
 	sudo install -d -m 700 $(PREFIX)/data
 	sudo install -m 755 $(BIN) $(PREFIX)/bin/$(BIN)

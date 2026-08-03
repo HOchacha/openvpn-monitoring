@@ -197,10 +197,10 @@ fi
 if [ "${#CHANGES[@]}" -eq 0 ]; then
 	printf '  %sReady.%s OpenVPN needs no changes, so nothing disconnects.\n' "$G" "$N"
 	echo
-	echo "    1. copy the release tarball to this host"
-	echo "    2. tar xzf ovpnmon-*.tar.gz && sudo ./install.sh"
-	echo "    3. edit /opt/ovpnmon/etc/ovpnmon.conf (iface, subnet, mgmt)"
-	echo "    4. sudo systemctl enable --now ovpnmon"
+	echo "    make deps          # only if the build toolchain is missing"
+	echo "    make install"
+	echo "    sudo vi /opt/ovpnmon/etc/ovpnmon.conf"
+	echo "    sudo systemctl enable --now ovpnmon"
 	exit 0
 fi
 

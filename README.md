@@ -251,20 +251,10 @@ sudo systemctl restart ovpnmon
 
 **OpenVPN은 재시작하지 마십시오** — 필요 없고, 그것만이 사용자를 끊습니다.
 
-### 서버에 툴체인을 두고 싶지 않다면
-
-빌드 머신에서 tarball을 만들어 복사하는 방법도 있습니다. 운영 서버에 Go도 clang도
-필요 없습니다 (eBPF 오브젝트가 바이너리에 임베드되어 있습니다):
-
-```bash
-make dist                                  # dist/ovpnmon-<version>.tar.gz (약 13MB)
-scp dist/ovpnmon-*.tar.gz vpn-server:/tmp/
-ssh vpn-server 'tar xzf /tmp/ovpnmon-*.tar.gz && cd ovpnmon-* && sudo ./preflight.sh && sudo ./install.sh'
-```
-
-tarball에는 `preflight.sh`, `install.sh`, 바이너리, 유닛, 설정 샘플, 그리고
-Prometheus·Grafana 프로비저닝 파일이 들어 있습니다. 이 경우 `install.sh`가 커널
-요구사항을 먼저 검사하고 미달이면 설치를 거부합니다.
+> 빌드 도구를 운영 서버에 두고 싶지 않다면, 빌드 머신에서 `make build`로 만든
+> `ovpnmon` 바이너리 하나만 복사해도 됩니다. eBPF 오브젝트가 안에 임베드되어 있어서
+> 대상 서버에는 Go도 clang도 커널 헤더도 필요 없습니다. 나머지 파일(설정 샘플,
+> systemd 유닛)은 저장소에서 가져오면 됩니다.
 
 ### 테스트 클라이언트
 
