@@ -131,13 +131,22 @@ sudo systemctl enable --now ovpnmon
 
 ## 운영 중인 서버에 배포하기
 
-이미 돌고 있는 OpenVPN 서버에 붙이는 경우입니다. **먼저 무엇이 필요한지 확인하십시오** —
-이 스크립트는 아무것도 바꾸지 않고 상태만 읽습니다.
+이미 돌고 있는 OpenVPN 서버에 붙이는 경우입니다. VPN 서버에서 직접:
 
 ```bash
-scp deploy/preflight.sh vpn-server:/tmp/
-ssh vpn-server 'sudo /tmp/preflight.sh'
+git clone https://github.com/HOchacha/openvpn-monitoring
+cd openvpn-monitoring
 ```
+
+### 1. 점검 — 아무것도 바꾸지 않습니다
+
+```bash
+make deps-check              # 커널·BTF·툴체인
+sudo ./deploy/preflight.sh   # OpenVPN 쪽에 필요한 변경과 중단 여부
+```
+
+`preflight.sh`는 상태만 읽습니다. 알려주는 것 중 가장 중요한 건 **OpenVPN 재시작이
+필요한지**입니다 — 재시작은 모든 클라이언트를 끊습니다.
 
 ```
 Kernel
@@ -199,46 +208,63 @@ preflight가 `Ready`라고 하면 OpenVPN을 건드릴 필요가 없으므로 �
 변경이 필요하다고 나오면 점검 창을 잡으십시오. **OpenVPN 변경을 먼저 하고, ovpnmon
 설치는 나중에 아무 때나** 하면 중단을 한 번으로 줄일 수 있습니다.
 
-### 배포
-
-운영 서버에 Go도 clang도 설치할 필요가 없습니다. 빌드 머신에서 만들어 복사합니다:
+### 2. 설치 — 무중단입니다
 
 ```bash
-make dist                                  # dist/ovpnmon-<version>.tar.gz (약 13MB)
-scp dist/ovpnmon-*.tar.gz vpn-server:/tmp/
+make deps                    # Go 등 빌드 도구 (없을 때만)
+make install                 # 빌드 후 /opt/ovpnmon 에 설치
 ```
 
-서버에서:
+설정을 맞추고 기동합니다. `preflight.sh`가 이 호스트에 맞는 `iface`와 `subnet`을
+이미 알려줬을 것입니다:
 
 ```bash
-tar xzf /tmp/ovpnmon-*.tar.gz && cd ovpnmon-*
-sudo ./preflight.sh                        # 한 번 더 확인
-sudo ./install.sh                          # /opt/ovpnmon 에 설치
-sudo vi /opt/ovpnmon/etc/ovpnmon.conf      # iface, subnet, mgmt 설정
+sudo vi /opt/ovpnmon/etc/ovpnmon.conf
 sudo systemctl enable --now ovpnmon
 ```
-
-`install.sh`는 커널 요구사항을 먼저 검사하고 미달이면 설치를 거부합니다. 그리고
-**기존 설정을 덮어쓰지 않습니다** — 이미 `ovpnmon.conf`가 있으면 새 기본값은
-`ovpnmon.conf.default`로 따로 떨어뜨리므로 업그레이드 시 비교할 수 있습니다.
 
 확인:
 
 ```bash
-curl -s localhost:9095/healthz             # management 연결 상태
+curl -s localhost:9095/healthz
 curl -s localhost:9095/api/snapshot | jq '.sessions[].common_name'
+```
+
+### 3. 선택 — Prometheus / Grafana
+
+```bash
+make observability
 ```
 
 ### 업그레이드
 
-같은 절차입니다. `install.sh`가 바이너리와 유닛만 교체하고 설정과 이력 DB는 그대로 둡니다.
-
 ```bash
-sudo systemctl stop ovpnmon && sudo ./install.sh && sudo systemctl start ovpnmon
+git pull
+make install
+sudo systemctl restart ovpnmon
 ```
 
-중지 중에는 플로우 집계가 멈추고 커널 맵이 비워지지만, 이미 기록된 이력은 남습니다.
+`make install`은 **기존 설정을 덮어쓰지 않습니다** — 새 기본값은
+`ovpnmon.conf.default`로 옆에 떨어뜨리므로 diff해서 확인할 수 있습니다. 이력 DB도
+그대로입니다. 재시작 중에는 플로우 집계가 잠시 멈추지만(커널 맵이 비워집니다) 이미
+기록된 이력은 남습니다.
+
 **OpenVPN은 재시작하지 마십시오** — 필요 없고, 그것만이 사용자를 끊습니다.
+
+### 서버에 툴체인을 두고 싶지 않다면
+
+빌드 머신에서 tarball을 만들어 복사하는 방법도 있습니다. 운영 서버에 Go도 clang도
+필요 없습니다 (eBPF 오브젝트가 바이너리에 임베드되어 있습니다):
+
+```bash
+make dist                                  # dist/ovpnmon-<version>.tar.gz (약 13MB)
+scp dist/ovpnmon-*.tar.gz vpn-server:/tmp/
+ssh vpn-server 'tar xzf /tmp/ovpnmon-*.tar.gz && cd ovpnmon-* && sudo ./preflight.sh && sudo ./install.sh'
+```
+
+tarball에는 `preflight.sh`, `install.sh`, 바이너리, 유닛, 설정 샘플, 그리고
+Prometheus·Grafana 프로비저닝 파일이 들어 있습니다. 이 경우 `install.sh`가 커널
+요구사항을 먼저 검사하고 미달이면 설치를 거부합니다.
 
 ### 테스트 클라이언트
 
