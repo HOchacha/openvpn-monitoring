@@ -62,6 +62,32 @@ vet:
 	$(GO) vet ./...
 	@test -z "$$(gofmt -l ./cmd ./internal)" || { echo "gofmt needed:"; gofmt -l ./cmd ./internal; exit 1; }
 
+## dist: build a release tarball for deploying to a VPN server
+.PHONY: dist
+dist: build
+	@rm -rf dist/ovpnmon-$(VERSION)
+	@# Listed separately: make runs /bin/sh, and dash has no brace expansion.
+	@mkdir -p dist/ovpnmon-$(VERSION)/bin \
+	          dist/ovpnmon-$(VERSION)/etc \
+	          dist/ovpnmon-$(VERSION)/systemd
+	install -m 755 $(BIN) dist/ovpnmon-$(VERSION)/bin/ovpnmon
+	install -m 755 deploy/ovpn-firewall.sh dist/ovpnmon-$(VERSION)/bin/ovpn-firewall
+	install -m 644 deploy/ovpnmon.conf dist/ovpnmon-$(VERSION)/etc/ovpnmon.conf
+	install -m 644 deploy/ovpnmon.service dist/ovpnmon-$(VERSION)/systemd/ovpnmon.service
+	install -m 755 deploy/dist-install.sh dist/ovpnmon-$(VERSION)/install.sh
+	install -m 755 deploy/preflight.sh dist/ovpnmon-$(VERSION)/preflight.sh
+	install -m 644 README.md dist/ovpnmon-$(VERSION)/README.md
+	tar -C dist -czf dist/ovpnmon-$(VERSION).tar.gz ovpnmon-$(VERSION)
+	@rm -rf dist/ovpnmon-$(VERSION)
+	@echo
+	@echo "  dist/ovpnmon-$(VERSION).tar.gz  ($$(du -h dist/ovpnmon-$(VERSION).tar.gz | cut -f1))"
+	@echo "  Copy to the VPN server, then: tar xzf ... && sudo ./ovpnmon-$(VERSION)/preflight.sh"
+
+## preflight: check whether this host can run ovpnmon, changing nothing
+.PHONY: preflight
+preflight:
+	@./deploy/preflight.sh
+
 ## observability: install Prometheus and Grafana, provisioned from deploy/ (root)
 .PHONY: observability
 observability:

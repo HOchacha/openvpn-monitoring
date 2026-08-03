@@ -1,5 +1,6 @@
 # Build output
 /ovpnmon
+/dist/
 
 # The bpf2go artefacts (internal/ebpfx/ovpnmon_bpfel.{go,o}) are committed on
 # purpose: with them in the tree, building ovpnmon needs only a Go toolchain -

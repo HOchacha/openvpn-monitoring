@@ -129,6 +129,86 @@ make install
 sudo systemctl enable --now ovpnmon
 ```
 
+## 운영 중인 서버에 배포하기
+
+이미 돌고 있는 OpenVPN 서버에 붙이는 경우입니다. **먼저 무엇이 필요한지 확인하십시오** —
+이 스크립트는 아무것도 바꾸지 않고 상태만 읽습니다.
+
+```bash
+scp deploy/preflight.sh vpn-server:/tmp/
+ssh vpn-server 'sudo /tmp/preflight.sh'
+```
+
+```
+Kernel
+  ok       kernel 6.8.0             TCX attachment requires >= 6.6
+  ok       BTF                      present
+OpenVPN
+  ok       openvpn 2.6.19           pid 439876
+  ok       config                   /etc/openvpn/server/server.conf
+  ok       management               127.0.0.1:7505
+  ok       DCO                      already disabled in config
+Tunnel
+  ok       tun0                     10.8.0.1/24
+           suggested ovpnmon settings:  iface = tun0   subnet = 10.8.0.0/24
+
+Verdict
+  Ready. OpenVPN needs no changes, so nothing disconnects.
+```
+
+### 중단이 필요한 경우와 아닌 경우
+
+| 작업 | 영향 |
+|---|---|
+| ovpnmon 설치·시작·중지 | **무중단.** eBPF 프로브를 붙이는 것은 기존 연결을 건드리지 않습니다 |
+| OpenVPN에 `management` 추가 | **전 클라이언트 접속 끊김** (OpenVPN 재시작 필요) |
+| OpenVPN에 `disable-dco` 추가 | **전 클라이언트 접속 끊김** (동일) |
+
+preflight가 `Ready`라고 하면 OpenVPN을 건드릴 필요가 없으므로 아무도 끊기지 않습니다.
+변경이 필요하다고 나오면 점검 창을 잡으십시오. **OpenVPN 변경을 먼저 하고, ovpnmon
+설치는 나중에 아무 때나** 하면 중단을 한 번으로 줄일 수 있습니다.
+
+### 배포
+
+운영 서버에 Go도 clang도 설치할 필요가 없습니다. 빌드 머신에서 만들어 복사합니다:
+
+```bash
+make dist                                  # dist/ovpnmon-<version>.tar.gz (약 13MB)
+scp dist/ovpnmon-*.tar.gz vpn-server:/tmp/
+```
+
+서버에서:
+
+```bash
+tar xzf /tmp/ovpnmon-*.tar.gz && cd ovpnmon-*
+sudo ./preflight.sh                        # 한 번 더 확인
+sudo ./install.sh                          # /opt/ovpnmon 에 설치
+sudo vi /opt/ovpnmon/etc/ovpnmon.conf      # iface, subnet, mgmt 설정
+sudo systemctl enable --now ovpnmon
+```
+
+`install.sh`는 커널 요구사항을 먼저 검사하고 미달이면 설치를 거부합니다. 그리고
+**기존 설정을 덮어쓰지 않습니다** — 이미 `ovpnmon.conf`가 있으면 새 기본값은
+`ovpnmon.conf.default`로 따로 떨어뜨리므로 업그레이드 시 비교할 수 있습니다.
+
+확인:
+
+```bash
+curl -s localhost:9095/healthz             # management 연결 상태
+curl -s localhost:9095/api/snapshot | jq '.sessions[].common_name'
+```
+
+### 업그레이드
+
+같은 절차입니다. `install.sh`가 바이너리와 유닛만 교체하고 설정과 이력 DB는 그대로 둡니다.
+
+```bash
+sudo systemctl stop ovpnmon && sudo ./install.sh && sudo systemctl start ovpnmon
+```
+
+중지 중에는 플로우 집계가 멈추고 커널 맵이 비워지지만, 이미 기록된 이력은 남습니다.
+**OpenVPN은 재시작하지 마십시오** — 필요 없고, 그것만이 사용자를 끊습니다.
+
 ### 테스트 클라이언트
 
 서버 설정은 `redirect-gateway`를 push하므로, **같은 호스트에서 그냥 클라이언트를 띄우면
