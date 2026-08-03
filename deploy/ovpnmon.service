@@ -1,0 +1,40 @@
+[Unit]
+Description=ovpnmon - OpenVPN session and destination monitor
+Documentation=file:///opt/ovpnmon/README.md
+After=network-online.target openvpn-server@server.service
+Wants=openvpn-server@server.service
+
+[Service]
+Type=simple
+# Everything ovpnmon owns lives under /opt/ovpnmon, so settings are changed by
+# editing the config file rather than this unit.
+ExecStart=/opt/ovpnmon/bin/ovpnmon -config /opt/ovpnmon/etc/ovpnmon.conf
+
+# The probe attaches to the tun device, which only exists once OpenVPN has
+# started. Restarting on failure covers the race and any later tun teardown.
+Restart=always
+RestartSec=5s
+
+# Loading eBPF and attaching TCX needs these; nothing else is required.
+CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_PERFMON CAP_SYS_RESOURCE
+AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_PERFMON CAP_SYS_RESOURCE
+NoNewPrivileges=yes
+
+ProtectSystem=strict
+ProtectHome=yes
+# The only path ovpnmon writes to.
+ReadWritePaths=/opt/ovpnmon/data
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

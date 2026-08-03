@@ -1,0 +1,15 @@
+# Build output
+/ovpnmon
+
+# The bpf2go artefacts (internal/ebpfx/ovpnmon_bpfel.{go,o}) are committed on
+# purpose: with them in the tree, building ovpnmon needs only a Go toolchain -
+# no clang, no libbpf headers, no kernel headers. Run `make generate` after
+# editing bpf/ovpnmon.bpf.c to refresh them.
+
+# Editor and OS noise
+*~
+*.swp
+*.swo
+.DS_Store
+.idea/
+.vscode/

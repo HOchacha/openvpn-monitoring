@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ovpnmon — OpenVPN session &amp; destination monitor</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --panel-2: #fbfbfc;
+    --border: #e3e5e9;
+    --text: #15171a;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --good: #15803d;
+    --warn: #b45309;
+    --bad: #b91c1c;
+    --up: #2563eb;
+    --down: #7c3aed;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1013;
+      --panel: #16191e;
+      --panel-2: #1b1f25;
+      --border: #282d35;
+      --text: #e8eaed;
+      --muted: #9aa1ac;
+      --accent: #60a5fa;
+      --good: #4ade80;
+      --warn: #fbbf24;
+      --bad: #f87171;
+      --up: #60a5fa;
+      --down: #c084fc;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+
+  header {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+    padding: 12px 20px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+  header .sub { color: var(--muted); font-size: 12px; font-family: var(--mono); }
+  header .spacer { flex: 1; }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px; border-radius: 999px;
+    background: var(--panel-2); border: 1px solid var(--border);
+    font-size: 12px; color: var(--muted);
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+  .dot.ok { background: var(--good); }
+  .dot.bad { background: var(--bad); }
+
+  main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+
+  .stats {
+    display: grid; gap: 12px; margin-bottom: 20px;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+  .stat {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px 14px;
+  }
+  .stat .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .stat .value { font-size: 22px; font-weight: 620; font-variant-numeric: tabular-nums; margin-top: 2px; }
+
+  .layout { display: grid; gap: 20px; grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr); }
+  @media (max-width: 1050px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+
+  section > h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--muted); margin: 0 0 10px;
+  }
+
+  .session {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; margin-bottom: 14px; overflow: hidden;
+  }
+  .session > summary {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
+    padding: 13px 16px; cursor: pointer; list-style: none;
+  }
+  .session > summary::-webkit-details-marker { display: none; }
+  .session > summary::before {
+    content: "▸"; color: var(--muted); font-size: 11px;
+    transition: transform 0.12s ease;
+  }
+  .session[open] > summary::before { transform: rotate(90deg); }
+  .session .cn { font-weight: 640; font-size: 15px; }
+  .session .vip { font-family: var(--mono); color: var(--accent); font-size: 12.5px; }
+  .session .meta { color: var(--muted); font-size: 12px; font-family: var(--mono); }
+  .session .traffic { margin-left: auto; display: flex; gap: 14px; font-family: var(--mono); font-size: 12.5px; }
+  .up { color: var(--up); }
+  .down { color: var(--down); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th {
+    text-align: left; padding: 7px 16px; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted);
+    background: var(--panel-2); border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0;
+  }
+  tbody td { padding: 7px 16px; border-bottom: 1px solid var(--border); vertical-align: baseline; }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.host { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ip { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .tag {
+    display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px;
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--muted);
+    font-family: var(--mono);
+  }
+  .tag.sni { color: var(--good); border-color: color-mix(in srgb, var(--good) 35%, var(--border)); }
+  .tag.dns { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+  .tag.http { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, var(--border)); }
+
+  .scroll { max-height: 460px; overflow: auto; }
+
+  #feed {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    max-height: 720px; overflow: auto; font-family: var(--mono); font-size: 12px;
+  }
+  .ev { display: flex; gap: 9px; padding: 6px 12px; border-bottom: 1px solid var(--border); }
+  .ev:last-child { border-bottom: none; }
+  .ev time { color: var(--muted); flex-shrink: 0; }
+  .ev .kind { flex-shrink: 0; width: 68px; font-weight: 600; }
+  .ev .body { overflow-wrap: anywhere; }
+  .k-connect .kind, .k-openvpn .kind { color: var(--good); }
+  .k-disconnect .kind { color: var(--bad); }
+  .k-tls .kind { color: var(--up); }
+  .k-dns .kind { color: var(--accent); }
+  .k-http .kind { color: var(--warn); }
+  .k-new_connection .kind { color: var(--muted); }
+
+  .tabs { display: flex; gap: 4px; margin-bottom: 10px; }
+  .tab {
+    padding: 5px 14px; font-size: 12px; font-weight: 600; cursor: pointer;
+    background: transparent; color: var(--muted);
+    border: 1px solid transparent; border-radius: 7px;
+    font-family: inherit;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { background: var(--panel); border-color: var(--border); color: var(--text); }
+
+  .filters {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px;
+  }
+  .filters input, .filters select, .filters button {
+    font: inherit; font-size: 13px; padding: 6px 10px;
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 7px;
+  }
+  .filters input { flex: 1 1 180px; min-width: 0; }
+  .filters button {
+    cursor: pointer; font-weight: 600;
+    background: var(--accent); border-color: var(--accent); color: #fff;
+  }
+  .filters button:hover { filter: brightness(1.08); }
+
+  .empty { color: var(--muted); padding: 26px 16px; text-align: center; font-size: 13px; }
+  .banner {
+    background: color-mix(in srgb, var(--bad) 12%, var(--panel));
+    border: 1px solid color-mix(in srgb, var(--bad) 40%, var(--border));
+    color: var(--bad); padding: 10px 14px; border-radius: 8px; margin-bottom: 16px;
+    font-size: 13px;
+  }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ovpnmon</h1>
+  <span class="sub" id="ifaceInfo"></span>
+  <span class="spacer"></span>
+  <span class="pill"><span class="dot" id="wsDot"></span><span id="wsText">connecting</span></span>
+  <span class="pill"><span class="dot" id="mgmtDot"></span>management</span>
+  <span class="pill" id="updated">—</span>
+</header>
+
+<main>
+  <div class="banner hidden" id="banner"></div>
+
+  <div class="stats">
+    <div class="stat"><div class="label">Connected clients</div><div class="value" id="sSessions">0</div></div>
+    <div class="stat"><div class="label">Tracked flows</div><div class="value" id="sFlows">0</div></div>
+    <div class="stat"><div class="label">Upload</div><div class="value up" id="sUp">0 B</div></div>
+    <div class="stat"><div class="label">Download</div><div class="value down" id="sDown">0 B</div></div>
+    <div class="stat"><div class="label">Names resolved</div><div class="value" id="sNames">0</div></div>
+    <div class="stat"><div class="label">Packets inspected</div><div class="value" id="sPackets">0</div></div>
+  </div>
+
+  <div class="layout">
+    <section>
+      <div class="tabs">
+        <button class="tab active" data-view="live">Live</button>
+        <button class="tab" data-view="history" id="historyTab">History</button>
+      </div>
+
+      <div id="viewLive">
+        <div id="sessions"><div class="empty">No clients connected.</div></div>
+      </div>
+
+      <div id="viewHistory" class="hidden">
+        <form id="histForm" class="filters">
+          <input name="common_name" placeholder="user (common name)" autocomplete="off">
+          <input name="hostname" placeholder="destination, e.g. example.com" autocomplete="off">
+          <select name="since">
+            <option value="1h">last hour</option>
+            <option value="24h" selected>last 24 hours</option>
+            <option value="7d">last 7 days</option>
+            <option value="30d">last 30 days</option>
+            <option value="">all time</option>
+          </select>
+          <select name="mode">
+            <option value="hosts">by destination</option>
+            <option value="events">observations</option>
+            <option value="sessions">sessions</option>
+          </select>
+          <button type="submit">Search</button>
+        </form>
+        <div id="histResult" class="scroll"><div class="empty">Run a search to query stored history.</div></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Live activity</h2>
+      <div id="feed"><div class="empty">Waiting for events…</div></div>
+    </section>
+  </div>
+</main>
+
+<script>
+"use strict";
+
+const MAX_FEED = 300;
+const open = new Set();          // sessions the user expanded, kept across refreshes
+let feedCount = 0;
+
+const $ = (id) => document.getElementById(id);
+
+function bytes(n) {
+  if (!n) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0, v = n;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return (i === 0 ? v : v.toFixed(v < 10 ? 2 : 1)) + " " + units[i];
+}
+
+function num(n) { return (n || 0).toLocaleString(); }
+
+function ago(iso) {
+  const d = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (!isFinite(d)) return "";
+  if (d < 60) return Math.max(0, Math.round(d)) + "s ago";
+  if (d < 3600) return Math.round(d / 60) + "m ago";
+  return Math.round(d / 3600) + "h ago";
+}
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+function renderSnapshot(snap) {
+  $("ifaceInfo").textContent = `${snap.interface} · ${snap.vpn_subnet}`;
+  $("updated").textContent = new Date(snap.updated_at).toLocaleTimeString();
+
+  const mgmtDot = $("mgmtDot");
+  mgmtDot.className = "dot " + (snap.mgmt_healthy ? "ok" : "bad");
+
+  const banner = $("banner");
+  if (!snap.mgmt_healthy && snap.mgmt_error) {
+    banner.textContent = "OpenVPN management interface unreachable: " + snap.mgmt_error;
+    banner.classList.remove("hidden");
+  } else {
+    banner.classList.add("hidden");
+  }
+
+  const sessions = snap.sessions || [];
+  let up = 0, down = 0;
+  for (const s of sessions) { up += s.flow_tx_bytes || 0; down += s.flow_rx_bytes || 0; }
+
+  $("sSessions").textContent = sessions.length;
+  $("sFlows").textContent = num(snap.flow_count);
+  $("sUp").textContent = bytes(up);
+  $("sDown").textContent = bytes(down);
+  $("sNames").textContent = num(snap.names_cached);
+  $("sPackets").textContent = num(snap.probe?.packets);
+
+  const host = $("sessions");
+  if (!sessions.length) {
+    host.innerHTML = '<div class="empty">No clients connected.</div>';
+    return;
+  }
+
+  host.innerHTML = sessions.map((s) => {
+    const key = s.common_name + "|" + s.virtual_ip;
+    const dests = s.destinations || [];
+    const rows = dests.length ? dests.map((d) => {
+      const name = d.hostname || "";
+      const src = d.name_source ? `<span class="tag ${esc(d.name_source)}">${esc(d.name_source)}</span>` : "";
+      const svc = d.service ? `<span class="tag">${esc(d.service)}</span>` : "";
+      return `<tr>
+        <td class="host" title="${esc(name || d.remote_ip)}">
+          ${name ? esc(name) : '<span class="ip">' + esc(d.remote_ip) + "</span>"} ${src}
+        </td>
+        <td class="ip">${name ? esc(d.remote_ip) : ""}</td>
+        <td class="num">${esc(d.proto)}/${d.port} ${svc}</td>
+        <td class="num up">${bytes(d.tx_bytes)}</td>
+        <td class="num down">${bytes(d.rx_bytes)}</td>
+        <td class="num">${d.connections || ""}</td>
+        <td class="num">${ago(d.last_seen)}</td>
+      </tr>`;
+    }).join("") : '<tr><td colspan="7" class="empty">No traffic observed yet.</td></tr>';
+
+    return `<details class="session" data-key="${esc(key)}" ${open.has(key) ? "open" : ""}>
+      <summary>
+        <span class="cn">${esc(s.common_name || "(unnamed)")}</span>
+        <span class="vip">${esc(s.virtual_ip)}</span>
+        <span class="meta">from ${esc(s.real_address)} · ${esc(s.duration)} · ${dests.length} dest</span>
+        <span class="traffic">
+          <span class="up">↑ ${bytes(s.flow_tx_bytes)}</span>
+          <span class="down">↓ ${bytes(s.flow_rx_bytes)}</span>
+        </span>
+      </summary>
+      <div class="scroll">
+        <table>
+          <thead><tr>
+            <th>Destination</th><th>Address</th><th style="text-align:right">Port</th>
+            <th style="text-align:right">Up</th><th style="text-align:right">Down</th>
+            <th style="text-align:right">Conns</th><th style="text-align:right">Last</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </details>`;
+  }).join("");
+
+  host.querySelectorAll("details.session").forEach((el) => {
+    el.addEventListener("toggle", () => {
+      const k = el.dataset.key;
+      el.open ? open.add(k) : open.delete(k);
+    });
+  });
+}
+
+function describe(ev) {
+  const who = ev.common_name || ev.client_ip || "?";
+  const where = ev.hostname || ev.remote_ip || "";
+  const port = ev.remote_port ? ":" + ev.remote_port : "";
+
+  switch (ev.kind) {
+    case "connect":    return `${esc(who)} connected ${esc(ev.detail || "")}`;
+    case "disconnect": return `${esc(who)} disconnected`;
+    case "dns":        return `${esc(who)} looked up <b>${esc(ev.hostname)}</b> — ${esc(ev.detail || "")}`;
+    case "tls":        return `${esc(who)} → <b>${esc(ev.hostname)}</b> <span class="ip">${esc(ev.remote_ip)}${port}</span>`;
+    case "http":       return `${esc(who)} → <b>${esc(ev.hostname)}</b> <span class="ip">${esc(ev.remote_ip)}${port}</span>`;
+    case "new_connection":
+      return `${esc(who)} → ${esc(where)}<span class="ip">${port} ${esc(ev.proto || "")}</span>`;
+    default:           return `${esc(who)} ${esc(ev.detail || ev.kind)}`;
+  }
+}
+
+function pushEvent(ev) {
+  const feed = $("feed");
+  if (feedCount === 0) feed.innerHTML = "";
+
+  const row = document.createElement("div");
+  row.className = "ev k-" + (ev.kind || "other");
+  row.innerHTML =
+    `<time>${new Date(ev.time).toLocaleTimeString()}</time>` +
+    `<span class="kind">${esc(ev.kind)}</span>` +
+    `<span class="body">${describe(ev)}</span>`;
+
+  feed.prepend(row);
+  feedCount++;
+  while (feed.childElementCount > MAX_FEED) feed.lastElementChild.remove();
+}
+
+// ---------------------------------------------------------------- history --
+
+document.querySelectorAll(".tab").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+    tab.classList.add("active");
+    const history = tab.dataset.view === "history";
+    $("viewLive").classList.toggle("hidden", history);
+    $("viewHistory").classList.toggle("hidden", !history);
+  });
+});
+
+const histTables = {
+  hosts: {
+    head: ["Destination", "User", "Up", "Down", "Conns", "Sessions", "Last seen"],
+    row: (h) => [
+      esc(h.hostname), esc(h.common_name),
+      bytes(h.tx_bytes), bytes(h.rx_bytes),
+      h.connections || "", h.sessions,
+      new Date(h.last_seen).toLocaleString(),
+    ],
+    align: [0, 0, 1, 1, 1, 1, 1],
+  },
+  events: {
+    head: ["Time", "Kind", "User", "Destination", "Address", "Detail"],
+    row: (e) => [
+      new Date(e.time).toLocaleString(), esc(e.kind), esc(e.common_name || ""),
+      esc(e.hostname || ""), esc(e.remote_ip || ""), esc(e.detail || ""),
+    ],
+    align: [0, 0, 0, 0, 0, 0],
+  },
+  sessions: {
+    head: ["User", "Virtual IP", "From", "Connected", "Disconnected", "Tunnel ↓", "Tunnel ↑"],
+    row: (s) => [
+      esc(s.common_name), esc(s.virtual_ip), esc(s.real_address),
+      new Date(s.connected_at).toLocaleString(),
+      s.disconnected_at ? new Date(s.disconnected_at).toLocaleString() : "still connected",
+      bytes(s.tunnel_bytes_received), bytes(s.tunnel_bytes_sent),
+    ],
+    align: [0, 0, 0, 0, 0, 1, 1],
+  },
+};
+
+$("histForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+
+  const form = new FormData(e.target);
+  const mode = form.get("mode");
+  const params = new URLSearchParams({ limit: "300" });
+  for (const key of ["common_name", "hostname", "since"]) {
+    const v = (form.get(key) || "").trim();
+    if (v) params.set(key, v);
+  }
+
+  const out = $("histResult");
+  out.innerHTML = '<div class="empty">Searching…</div>';
+
+  try {
+    const res = await fetch(`/api/history/${mode}?${params}`);
+    if (!res.ok) throw new Error(await res.text() || res.statusText);
+    const rows = await res.json();
+
+    if (!rows.length) {
+      out.innerHTML = '<div class="empty">No records match.</div>';
+      return;
+    }
+
+    const spec = histTables[mode];
+    const th = spec.head.map((h, i) =>
+      `<th${spec.align[i] ? ' style="text-align:right"' : ""}>${esc(h)}</th>`).join("");
+    const tr = rows.map((r) => {
+      const cells = spec.row(r).map((c, i) =>
+        `<td class="${spec.align[i] ? "num" : ""}">${c}</td>`).join("");
+      return `<tr>${cells}</tr>`;
+    }).join("");
+
+    out.innerHTML = `<table><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table>`;
+  } catch (err) {
+    out.innerHTML = `<div class="empty">Query failed: ${esc(err.message)}</div>`;
+  }
+});
+
+// Hide the History tab entirely when the server has no store configured.
+fetch("/api/history/stats").then((r) => {
+  if (!r.ok) $("historyTab").classList.add("hidden");
+}).catch(() => $("historyTab").classList.add("hidden"));
+
+// ------------------------------------------------------------------- live --
+
+function connect() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${proto}//${location.host}/api/stream`);
+
+  ws.onopen = () => {
+    $("wsDot").className = "dot ok";
+    $("wsText").textContent = "live";
+  };
+  ws.onmessage = (m) => {
+    const frame = JSON.parse(m.data);
+    if (frame.type === "snapshot") renderSnapshot(frame.snapshot);
+    else if (frame.type === "event") pushEvent(frame.event);
+  };
+  ws.onclose = () => {
+    $("wsDot").className = "dot bad";
+    $("wsText").textContent = "reconnecting";
+    setTimeout(connect, 2000);
+  };
+  ws.onerror = () => ws.close();
+}
+
+connect();
+</script>
+</body>
+</html>

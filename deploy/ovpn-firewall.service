@@ -1,0 +1,21 @@
+[Unit]
+Description=Forwarding and NAT rules for the OpenVPN subnet
+Documentation=file:///opt/ovpnmon/README.md
+After=network-online.target
+Wants=network-online.target
+Before=openvpn-server@server.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Written by setup-openvpn.sh; holds VPN_NET, TUN_IF and WAN_IF. Optional,
+# because the script defaults to 10.8.0.0/24 on the route to the internet.
+EnvironmentFile=-/opt/ovpnmon/etc/firewall.conf
+ExecStart=/opt/ovpnmon/bin/ovpn-firewall up
+ExecStop=/opt/ovpnmon/bin/ovpn-firewall down
+
+# The rules are idempotent, so a re-run after a manual flush restores them.
+ExecReload=/opt/ovpnmon/bin/ovpn-firewall up
+
+[Install]
+WantedBy=multi-user.target

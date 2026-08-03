@@ -1,0 +1,363 @@
+# ovpnmon
+
+OpenVPN 서버에 **누가 접속해 있는지**, 그리고 그 사용자가 **VPN을 통해 어디로 접속하는지**를
+실시간으로 추적합니다.
+
+신원은 OpenVPN management 인터페이스에서, 트래픽은 tun 디바이스에 붙인 eBPF 프로브에서
+가져와 하나의 화면으로 합칩니다.
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ OpenVPN 서버                                                      │
+│                                                                  │
+│  management 127.0.0.1:7505 ──── 누가 접속했나                      │
+│      · CN ↔ 가상 IP(10.8.0.x) ↔ 실제 접속 IP ↔ 세션 바이트          │
+│                                                                  │
+│  tun0 ──── TCX eBPF ──────────── 어디로 가나                       │
+│      · ingress: 클라이언트 → 인터넷                                │
+│      · egress : 인터넷 → 클라이언트                                │
+└───────────────────────────┬──────────────────────────────────────┘
+                            │
+                     ┌──────▼───────┐
+                     │   ovpnmon    │
+                     │  (단일 바이너리) │
+                     └──────┬───────┘
+                            │
+        ┌───────────────────┼────────────────────┐
+        ▼                   ▼                    ▼
+   웹 대시보드          JSON API              /metrics
+   (WebSocket)     /api/snapshot 등        (Prometheus)
+```
+
+## 핵심 설계
+
+**커널은 분류·집계·샘플링만, 파싱은 유저스페이스에서.**
+eBPF 프로그램은 모든 패킷을 `{클라이언트, 목적지}` 단위로 집계하고, 목적지를 사람이 읽을 수
+있게 만드는 소수의 페이로드(DNS 응답, TLS ClientHello, HTTP 요청)만 링버퍼로 올려보냅니다.
+DNS 압축 포인터를 따라가는 파서를 verifier와 싸워가며 커널에 넣는 것은 복잡도만 늘릴 뿐
+속도를 사지 못합니다 — 이런 페이로드는 대량 트래픽에 비하면 매우 드뭅니다.
+
+**목적지 이름은 세 가지 신호로 채웁니다.** IP 주소만으로는 "어디에 접속했는지" 알 수 없습니다.
+CDN 주소 하나가 수천 개 사이트를 대표하기 때문입니다.
+
+| 신호 | 방향 | 신뢰도 | 내용 |
+|---|---|---|---|
+| TLS SNI | 클라이언트 → 서버 | 높음 | HTTPS 연결이 실제로 향하는 호스트 |
+| HTTP Host | 클라이언트 → 서버 | 중간 | 평문 HTTP의 대상 호스트 |
+| DNS 응답 | 서버 → 클라이언트 | 낮음 | 사용자가 질의한 이름과 그 응답 주소들 |
+
+SNI/Host는 그 연결에 대해 확정적이고, DNS는 그 외 모든 트래픽을 덮는 힌트입니다.
+약한 신호는 강한 신호를 덮어쓰지 않습니다.
+
+**신원 태깅은 커널에서.** 유저스페이스가 `가상 IP → OpenVPN client id` 매핑을 BPF 맵에
+내려주므로, 플로우는 집계되는 그 지점에서 사용자와 연결됩니다.
+
+## 요구 사항
+
+- Linux 커널 **6.6 이상** (TCX 훅). BTF(`/sys/kernel/btf/vmlinux`) 필요
+- OpenVPN 2.4 이상, management 인터페이스 활성화
+- 빌드: Go 1.24+, clang 15+, libbpf 헤더 (`libbpf-dev`)
+- 실행: root, 또는 `CAP_BPF` + `CAP_NET_ADMIN` + `CAP_PERFMON`
+
+> **OpenVPN 2.6의 DCO 주의.** Data Channel Offload가 켜지면 데이터 경로가 `ovpn-dco`
+> 커널 모듈로 옮겨가 tun 디바이스를 지나지 않습니다. 동봉된 서버 설정은 `disable-dco`로
+> 이를 끕니다. 기존 서버에 붙일 때도 같은 설정이 필요합니다.
+
+> **management 인터페이스는 동시 접속을 하나만 받습니다.** ovpnmon이 붙어 있는 동안
+> `telnet 127.0.0.1 7505`로 직접 접속하면 연결은 되지만 응답이 오지 않고 대기합니다.
+> 수동으로 진단할 일이 있으면 `systemctl stop ovpnmon` 후에 붙거나, 같은 데이터를
+> `/api/snapshot`에서 읽으십시오. 같은 이유로 ovpnmon과 다른 OpenVPN 모니터링 도구를
+> 같은 포트에 동시에 붙일 수 없습니다.
+
+## 빠른 시작
+
+처음부터 전부 구축하는 경우:
+
+```bash
+sudo ./deploy/setup-openvpn.sh     # PKI + 서버 설정 + NAT + 테스트 인증서(alice, bob)
+make build
+sudo ./ovpnmon -iface tun0 -subnet 10.8.0.0/24 -mgmt 127.0.0.1:7505
+```
+
+브라우저에서 <http://127.0.0.1:9090> 을 엽니다.
+
+이미 운영 중인 OpenVPN 서버에 붙이는 경우, 서버 설정에 다음이 있어야 합니다:
+
+```
+management 127.0.0.1 7505
+disable-dco          # OpenVPN 2.6 이상
+```
+
+### 서비스로 설치
+
+```bash
+make install
+sudo systemctl enable --now ovpnmon
+```
+
+### 테스트 클라이언트
+
+서버 설정은 `redirect-gateway`를 push하므로, **같은 호스트에서 그냥 클라이언트를 띄우면
+호스트의 기본 경로가 터널로 넘어가 SSH 세션이 끊깁니다.** `deploy/test-client.sh`는
+클라이언트를 network namespace에 격리해 이 위험을 없앱니다.
+
+```bash
+sudo ./deploy/test-client.sh up alice
+sudo ./deploy/test-client.sh exec alice -- curl -s https://example.com -o /dev/null
+sudo ./deploy/test-client.sh down alice
+```
+
+## 인터페이스
+
+| 경로 | 내용 |
+|---|---|
+| `/` | 실시간 웹 대시보드 (Live / History 탭) |
+| `/api/snapshot` | 세션·목적지·프로브 통계 전체 |
+| `/api/sessions` | 세션 목록 (`?common_name=alice`로 필터) |
+| `/api/events` | 최근 라이브 이벤트 (메모리) |
+| `/api/stream` | WebSocket 실시간 스트림 |
+| `/api/history/hosts` | **누가 어디로** — 목적지별 집계 |
+| `/api/history/sessions` | 접속 이력 |
+| `/api/history/destinations` | 세션별 목적지 상세 |
+| `/api/history/events` | 저장된 DNS/TLS/HTTP 관측 기록 |
+| `/api/history/stats` | 저장 현황과 쓰기 상태 |
+| `/metrics` | Prometheus 메트릭 |
+| `/healthz` | management 연결 상태 |
+
+`/api/history/*`는 `-store`가 설정된 경우에만 존재합니다.
+
+주요 메트릭:
+
+```
+openvpn_sessions                                            현재 접속자 수
+openvpn_session_info{common_name,virtual_ip,real_address}   접속자 신원
+openvpn_client_bytes{common_name,direction}                 터널 내부 평문 바이트
+openvpn_tunnel_bytes{common_name,direction}                 OpenVPN이 센 암호화 바이트
+openvpn_destination_bytes{common_name,hostname,port,...}    목적지별 바이트
+openvpn_probe_events_lost                                   링버퍼 유실 (0이어야 정상)
+```
+
+`openvpn_destination_bytes`는 카디널리티가 폭증할 수 있어 클라이언트당 상위 N개만
+노출하고 나머지는 `hostname="other"`로 합산합니다 (`-top-destinations`, 기본 20,
+`0`이면 비활성화).
+
+## 설치되는 것
+
+### 데몬
+
+| 유닛 | 실행 | 역할 |
+|---|---|---|
+| `openvpn-server@server` | `nobody`로 권한 강등 | VPN 서버 본체, tun0 생성, management 포트 |
+| `ovpnmon` | root | eBPF 프로브 + 대시보드/API/메트릭 |
+| `ovpn-firewall` | oneshot (부팅 시 1회) | NAT·FORWARD 규칙 복원 |
+
+셋 다 `enabled` 상태이며 부팅 시 자동 시작합니다.
+
+### 파일
+
+ovpnmon이 소유하는 것은 **전부 `/opt/ovpnmon` 아래 한 곳에** 있습니다.
+시스템 디렉토리에 흩어놓지 않습니다.
+
+```
+/opt/ovpnmon/
+├── bin/ovpnmon                 바이너리 (eBPF 오브젝트 임베드, ~25MB)
+├── bin/ovpn-firewall           NAT·FORWARD 규칙 스크립트
+├── etc/ovpnmon.conf            ★ 설정 (0640) — 여기만 고치면 됩니다
+├── etc/firewall.conf           서브넷·인터페이스
+├── data/history.db{,-wal,-shm} ★ 접속 이력 (0600, 디렉토리 0700)
+└── README.md
+```
+
+OS 규약상 다른 곳에 있어야 하는 것은 두 개의 systemd 유닛뿐입니다:
+
+```
+/etc/systemd/system/ovpnmon.service
+/etc/systemd/system/ovpn-firewall.service
+```
+
+유닛은 `-config` 하나만 넘기고 나머지 설정은 전부 `etc/ovpnmon.conf`에 있으므로,
+**설정을 바꾸려고 유닛 파일을 편집할 일이 없습니다.**
+
+제거는 흔적을 남기지 않습니다:
+
+```bash
+make uninstall   # 바이너리·설정·유닛 제거, data/ 이력은 보존
+make purge       # /opt/ovpnmon 통째로 삭제
+```
+
+> 아래는 `deploy/setup-openvpn.sh`가 만드는 **OpenVPN 쪽** 파일입니다. ovpnmon과는
+> 별개이며, 이미 운영 중인 OpenVPN 서버에 붙이는 경우에는 생성되지 않습니다.
+>
+> ```
+> /etc/openvpn/server/{server.conf,ca.crt,server.crt}
+> /etc/openvpn/server/server.key            ★ 서버 개인키
+> /etc/openvpn/server/tls-crypt.key         ★ 제어 채널 사전 공유키
+> /etc/openvpn/easy-rsa/pki/                ★★ CA 개인키를 포함한 PKI 전체
+> /etc/openvpn/client-profiles/*.ovpn       ★★ 클라이언트 개인키 포함
+> /var/log/openvpn/{server,status}.log, ipp.txt
+> /etc/sysctl.d/99-openvpn-forward.conf     net.ipv4.ip_forward = 1
+> /etc/logrotate.d/openvpn                  주간 로테이션, 8주 보관
+> ```
+>
+> ★★ 중 `easy-rsa/pki/private/ca.key`가 유출되면 누구나 유효한 클라이언트 인증서를
+> 발급할 수 있어 인증 체계 전체가 무너집니다. 운영 환경에서는 CA를 오프라인 장비에
+> 두는 것이 정석입니다.
+
+### 커널에만 존재하는 상태 (파일 아님)
+
+```
+tun0                       VPN 인터페이스
+eBPF 프로그램 2개           tun0의 TCX ingress/egress
+BPF 맵 5개                  flows, sessions, events, probe_stats, scratch
+iptables 규칙 3개           NAT 1 + FORWARD 2
+```
+
+이들은 재부팅하면 사라지므로 `ovpn-firewall` 유닛이 iptables 규칙을 다시 넣고,
+`ovpnmon`이 eBPF를 다시 붙입니다. **규칙을 인라인으로만 적용하면 재부팅 후 클라이언트가
+접속은 되는데 인터넷이 안 되는 상태가 됩니다** — VPN 문제처럼 보이지만 실제로는 NAT
+규칙이 사라진 것이라 진단이 까다롭습니다.
+
+### 빌드에만 필요한 것
+
+`/usr/local/go`와 `clang`·`libbpf-dev` 패키지는 빌드 전용입니다. eBPF 오브젝트가
+바이너리에 임베드되므로 **배포 대상 서버에는 필요 없습니다.**
+
+### 디스크 사용량
+
+이력 DB가 유일하게 계속 자라는 부분입니다. 대략적으로 사용자당 하루 수백 KB
+수준이며, `-retention`(기본 30일)이 상한을 정합니다. 대부분은 `events` 테이블이
+차지하므로, 용량이 문제라면 보관 기간을 줄이는 것이 가장 효과적입니다.
+
+## 이력 (감사 로그)
+
+커널 플로우 맵은 **현재 상태**만 담습니다. 조용해진 대화는 `-flow-idle` 후 사라지고,
+재시작하면 전부 없어집니다. `-store`를 켜면 그 내용이 데이터베이스에 남아
+"지난주에 누가 어디에 접속했나"를 물어볼 수 있습니다.
+
+```bash
+# SQLite (기본 권장 — 파일 하나, 외부 의존성 없음)
+ovpnmon -store sqlite:/var/lib/ovpnmon/history.db -retention 720h
+
+# 기존 MySQL 사용
+ovpnmon -store 'mysql://ovpnmon:secret@tcp(127.0.0.1:3306)/ovpnmon?parseTime=true'
+```
+
+세 개의 테이블이 각각 다른 질문에 답합니다:
+
+| 테이블 | 내용 |
+|---|---|
+| `sessions` | 누가 언제부터 언제까지, 어느 IP에서 접속했나 |
+| `destinations` | 세션별로 어느 목적지에 얼마나 트래픽이 오갔나 |
+| `events` | DNS 조회·TLS 접속·HTTP 요청 개별 기록 |
+
+조회 예시:
+
+```bash
+# 지난 7일간 alice가 접속한 목적지
+curl -s 'localhost:9090/api/history/hosts?common_name=alice&since=7d' | jq
+
+# 특정 도메인에 접속한 사람 전부 (하위 도메인 포함)
+curl -s 'localhost:9090/api/history/hosts?hostname=example.com&since=30d' | jq
+
+# 특정 기간의 원본 관측 기록
+curl -s 'localhost:9090/api/history/events?from=2026-08-01&to=2026-08-02' | jq
+```
+
+`since`는 `30m` `24h` `7d` `2w`를, `from`/`to`는 RFC3339·`YYYY-MM-DD`·unix time·`-7d`
+형식을 받습니다. 대시보드의 **History** 탭에서 같은 질의를 폼으로 할 수도 있습니다.
+
+설계상 알아두실 점:
+
+- **쓰기는 비동기입니다.** 모니터링이 감시 대상을 멈춰 세우면 안 되므로, 큐가 가득 차면
+  기록을 버리고 카운터를 올립니다. `openvpn_history_events_dropped`가 0이 아니면
+  감사 로그에 구멍이 생긴 것이니 경보를 걸어두십시오.
+- **바이트는 증분으로 누적됩니다.** 커널 플로우가 만료됐다 되살아나면 카운터가 0부터
+  다시 시작하므로, 최대값이 아니라 증가분을 더합니다.
+- **ovpnmon을 재시작해도 세션이 쪼개지지 않습니다.** OpenVPN이 알려주는 실제 연결
+  시각을 키로 삼아 기존 기록을 이어받습니다. 반대로 프로세스가 비정상 종료되어 열린 채
+  남은 세션은 다음 기동 때 마지막 활동 시각으로 닫힙니다.
+- `-retention`(기본 30일)이 지난 기록은 하루 한 번 삭제됩니다. `0`이면 영구 보관입니다.
+- SQLite 파일은 `0600`으로 생성됩니다.
+
+## 설정
+
+설정은 `/opt/ovpnmon/etc/ovpnmon.conf`에 모여 있습니다. 키 이름은 플래그 이름과
+같아서 `ovpnmon -help`에 나오는 것은 무엇이든 파일에도 쓸 수 있습니다.
+
+```ini
+iface  = tun0
+subnet = 10.8.0.0/24
+mgmt   = 127.0.0.1:7505
+listen = 127.0.0.1:9090
+
+store     = sqlite:/opt/ovpnmon/data/history.db
+retention = 720h
+
+top-destinations = 20
+flow-idle        = 5m
+name-ttl         = 30m
+log-level        = info
+```
+
+우선순위는 **커맨드라인 > 설정 파일 > 기본값**입니다. 임시로 하나만 바꿔 실행하려면
+플래그를 주면 되고, 파일을 고칠 필요가 없습니다.
+
+**오타는 조용히 무시되지 않고 기동 실패입니다.** 설정 파일의 오타는 그러지 않으면
+"왜 이 설정이 안 먹지"를 한참 뒤에 발견하게 됩니다.
+
+```
+$ ovpnmon -config /opt/ovpnmon/etc/ovpnmon.conf
+ovpnmon: reading config: /opt/ovpnmon/etc/ovpnmon.conf:24: unknown setting "retenshun"
+```
+
+전체 옵션은 `ovpnmon -help`에 있습니다.
+
+`listen`의 기본값은 루프백입니다. 외부에 노출한다면 앞단에 인증을 두십시오 —
+이 엔드포인트는 사용자들의 접속 내역 전체를 담고 있습니다.
+
+## 한계
+
+- **IPv4만 추적합니다.** IPv6 플로우는 집계되지 않습니다 (DNS AAAA 응답은 캐시에 기록됨).
+- **QUIC / HTTP3** (UDP 443)의 ClientHello는 암호화되어 있어 SNI를 볼 수 없습니다.
+  이 트래픽은 DNS 응답으로만 이름이 붙습니다.
+- **Encrypted Client Hello(ECH)** 를 쓰는 연결은 SNI가 보이지 않습니다.
+- **DoH/DoT**를 쓰는 클라이언트는 DNS 신호도 남기지 않습니다. 목적지는 IP로만 남습니다.
+- 페이로드 스냅샷은 **512바이트**이며, 그보다 뒤에 있는 SNI 확장은 잘립니다
+  (`probe.truncated` 카운터로 관측 가능). ClientHello가 여러 세그먼트로 쪼개진 경우도
+  첫 세그먼트만 봅니다.
+- 플로우 맵은 65536개 엔트리의 LRU입니다. 초과분은 커널이 오래된 것부터 밀어냅니다.
+
+## 프라이버시
+
+이 도구는 VPN 사용자가 방문하는 호스트명 단위의 접속 기록을 만듭니다.
+운영 주체에게 그 권한이 있는지, 사용자에게 고지가 되었는지, 보관 기간이 적절한지는
+배포 전에 확인해야 할 사항입니다. 페이로드 본문은 저장하지 않습니다.
+
+`-store` 없이 쓰면 모든 것이 메모리에만 있고 재시작과 함께 사라집니다. `-store`를 켜는
+순간부터는 되돌릴 수 없는 기록이 남으므로, **켜기 전에 보관 기간을 정하십시오**
+(`-retention`, 기본 30일). 여기에는 사용자의 실제 접속 IP도 포함되며, 이는 목적지보다
+민감한 정보입니다 — 소재지와 ISP가 드러납니다.
+
+## 구조
+
+```
+bpf/ovpnmon.bpf.c        eBPF 데이터플레인 (플로우 집계 + 페이로드 샘플링)
+internal/ebpfx/          프로그램 로드·TCX 부착·맵 접근
+internal/mgmt/           OpenVPN management 프로토콜 클라이언트
+internal/resolver/       DNS/SNI/HTTP 파서와 이름 캐시
+internal/collector/      세 소스를 합쳐 스냅샷 생성
+internal/api/            HTTP·WebSocket·대시보드
+internal/metrics/        Prometheus exporter
+deploy/                  서버 구축 스크립트, systemd 유닛, 테스트 클라이언트
+```
+
+`bpf/ovpnmon.bpf.c`를 수정한 뒤에는 `make generate`로 재컴파일해야 합니다.
+컴파일된 오브젝트는 바이너리에 임베드되므로, 배포 대상에는 clang이나 커널 헤더가 필요 없습니다.
+
+## 개발
+
+```bash
+make generate     # eBPF 재컴파일 + Go 바인딩 생성
+make vet          # go vet + gofmt 확인
+make test-root    # 커널 verifier 테스트 포함 전체 테스트
+```
