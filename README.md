@@ -262,6 +262,77 @@ iptables 규칙 3개           NAT 1 + FORWARD 2
 수준이며, `-retention`(기본 30일)이 상한을 정합니다. 대부분은 `events` 테이블이
 차지하므로, 용량이 문제라면 보관 기간을 줄이는 것이 가장 효과적입니다.
 
+## Prometheus / Grafana
+
+`/metrics`를 직접 긁어도 되지만, 대시보드와 알림까지 한 번에 구성하려면:
+
+```bash
+make observability      # Prometheus + Grafana 설치, 프로비저닝까지
+```
+
+| | 주소 | 비고 |
+|---|---|---|
+| ovpnmon | `127.0.0.1:9095` | Prometheus에 9090을 내주고 이동 |
+| Prometheus | `127.0.0.1:9090` | |
+| Grafana | `127.0.0.1:3000` | 최초 로그인 `admin` / `admin` |
+
+셋 다 루프백에만 바인딩합니다. 접속은 SSH 터널로:
+
+```bash
+ssh -N -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 ubuntu@<host>
+```
+
+### 설정은 저장소가 원본입니다
+
+클릭으로 만든 대시보드는 Grafana DB와 함께 사라집니다. 여기서는 전부 파일입니다:
+
+```
+deploy/observability/
+├── install.sh
+├── prometheus/
+│   ├── ovpnmon-scrape.yml      스크레이프 설정
+│   └── ovpnmon.rules.yml       알림 + recording 규칙
+└── grafana/
+    ├── datasource.yml
+    ├── dashboard-provider.yml
+    └── dashboards/ovpnmon.json
+```
+
+대시보드는 `allowUiUpdates: false`로 프로비저닝됩니다 — UI에서 고쳐도 30초 뒤
+파일 내용으로 되돌아갑니다. **JSON을 고치고 `make observability-config`를 돌리십시오.**
+그래야 호스트를 다시 만들어도 같은 대시보드가 나옵니다.
+
+Prometheus 쪽도 `prometheus.yml`을 직접 편집하지 않고 `scrape_config_files`와
+`rule_files`로 드롭인을 참조하게 합니다. 패키지 업그레이드나 다른 잡에 영향을 주지
+않습니다.
+
+### 대시보드
+
+`VPN / OpenVPN — sessions and destinations`. 서버·사용자 변수로 필터할 수 있습니다.
+
+- **Health** — 접속자 수, management 연결 상태, 총 업/다운로드, 추적 플로우, 유실 이벤트
+- **Who** — 사용자별 처리량(다운로드는 음수로 그려 방향 분리), 접속자 테이블
+  (인증서 CN·VPN IP·접속 출발지·암호화 방식·접속 시간)
+- **Where** — 목적지 Top 20 테이블, 목적지별 트래픽 추이, 사용자별 신규 연결 수
+- **Probe and history** — 검사 패킷 수, 이름 해석 현황, 이력 쓰기 상태
+
+### 알림
+
+모니터 자신이 신뢰할 수 있는지를 봅니다. **조용히 눈이 먼 모니터는 없는 것보다 나쁩니다** —
+대시보드는 멀쩡해 보이기 때문입니다.
+
+| 알림 | 의미 |
+|---|---|
+| `OvpnmonDown` | 수집 전면 중단 (프로세스가 죽으면 eBPF도 떨어짐) |
+| `OvpnmonManagementUnreachable` | 트래픽은 세지만 사용자에 귀속되지 않음 |
+| `OvpnmonRingBufferOverflow` | DNS/TLS 관측 유실 → 목적지가 IP로만 남음 |
+| `OvpnmonProbeSeeingNoTraffic` | 접속자는 있는데 패킷이 안 보임 (인터페이스 오지정 또는 DCO) |
+| `OvpnmonHistoryWritesFailing` | 감사 로그에 구멍 |
+| `OvpnmonHistoryEventsDropped` | 부하로 이력 유실 (쓰기는 논블로킹이 의도) |
+
+Alertmanager는 별도 구성입니다. `prometheus-alertmanager` 패키지를 설치하고
+`/etc/prometheus/prometheus.yml`의 `alerting.alertmanagers`를 확인하십시오.
+
 ## 이력 (감사 로그)
 
 커널 플로우 맵은 **현재 상태**만 담습니다. 조용해진 대화는 `-flow-idle` 후 사라지고,

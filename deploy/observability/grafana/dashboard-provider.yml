@@ -1,0 +1,17 @@
+# Loads dashboard JSON from disk so they are managed as code rather than
+# clicked together and lost with the Grafana database.
+apiVersion: 1
+
+providers:
+  - name: ovpnmon
+    orgId: 1
+    folder: VPN
+    type: file
+    # Edits made in the UI are overwritten on the next load. Change the JSON in
+    # the repository instead - that is what makes the dashboard reproducible.
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards/ovpnmon
+      foldersFromFilesStructure: false

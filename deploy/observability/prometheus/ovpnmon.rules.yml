@@ -1,0 +1,102 @@
+# Recording and alerting rules for ovpnmon.
+#
+# The alerts here are about the monitor itself being trustworthy. An
+# observability tool that has quietly stopped seeing traffic is worse than no
+# tool, because the dashboard still looks fine.
+
+groups:
+  - name: ovpnmon-health
+    interval: 30s
+    rules:
+      - alert: OvpnmonDown
+        expr: up{job="ovpnmon"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ovpnmon is not responding on {{ $labels.instance }}"
+          description: >-
+            No VPN session or destination data is being collected. The eBPF
+            probe detaches when the process exits, so this is a full blackout,
+            not a delay.
+
+      - alert: OvpnmonManagementUnreachable
+        expr: openvpn_management_up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ovpnmon cannot reach OpenVPN's management interface"
+          description: >-
+            Traffic is still being counted, but with no client identities to
+            attribute it to, so everything lands in "unattributed". OpenVPN
+            serves one management client at a time with a listen backlog of 1;
+            if a previous session was not torn down cleanly the interface stays
+            blocked until OpenVPN restarts. Check `systemctl status ovpnmon`
+            first, then `ss -tln | grep 7505` for a non-empty accept queue.
+
+      - alert: OvpnmonRingBufferOverflow
+        # Any sustained loss means destination names are being missed.
+        expr: rate(openvpn_probe_events_lost[5m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ovpnmon is dropping probe events on {{ $labels.instance }}"
+          description: >-
+            The kernel ring buffer is full, so DNS replies and TLS handshakes
+            are being discarded before userspace parses them. Destinations will
+            increasingly show as bare IPs. Raise the buffer in
+            bpf/ovpnmon.bpf.c or reduce what is captured.
+
+      - alert: OvpnmonHistoryWritesFailing
+        expr: rate(openvpn_history_write_errors[10m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ovpnmon cannot write audit history"
+          description: >-
+            Sessions and destinations are visible live but are not reaching the
+            database, so the audit trail has a hole in it for this period.
+
+      - alert: OvpnmonHistoryEventsDropped
+        expr: rate(openvpn_history_events_dropped[10m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ovpnmon is discarding history events under load"
+          description: >-
+            The write queue is full. Writes are deliberately non-blocking so
+            monitoring never stalls the thing it monitors, which means the
+            audit trail loses records rather than applying backpressure.
+
+      - alert: OvpnmonProbeSeeingNoTraffic
+        # Clients are connected but no packets are being inspected: the probe
+        # is attached to the wrong interface, or DCO has moved the datapath.
+        expr: >-
+          openvpn_sessions > 0
+          and rate(openvpn_probe_packets[10m]) == 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ovpnmon has clients connected but sees no packets"
+          description: >-
+            The probe is attached but nothing is passing through it. Most
+            likely -iface points at the wrong device, or OpenVPN 2.6 has data
+            channel offload enabled and the datapath now bypasses tun
+            entirely - add "disable-dco" to the server config.
+
+  - name: ovpnmon-recording
+    interval: 30s
+    rules:
+      # Per-user throughput, precomputed because dashboards ask for it
+      # constantly and the raw series carry several labels.
+      - record: openvpn:client_throughput_bytes:rate5m
+        expr: sum by (common_name, direction) (rate(openvpn_client_bytes[5m]))
+
+      # Which destinations are busiest right now, across all users.
+      - record: openvpn:destination_throughput_bytes:rate5m
+        expr: sum by (hostname, direction) (rate(openvpn_destination_bytes[5m]))

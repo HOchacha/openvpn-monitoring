@@ -1,0 +1,19 @@
+# Grafana datasource provisioning.
+#
+# Provisioned datasources cannot be edited in the UI, which is the point: the
+# file in the repository is the source of truth, so a rebuilt Grafana comes
+# back identical.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: ovpnmon-prometheus
+    type: prometheus
+    access: proxy
+    url: http://127.0.0.1:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # Must not be shorter than the scrape interval, or graphs show gaps.
+      timeInterval: 15s
+      httpMethod: POST

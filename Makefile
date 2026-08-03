@@ -62,6 +62,16 @@ vet:
 	$(GO) vet ./...
 	@test -z "$$(gofmt -l ./cmd ./internal)" || { echo "gofmt needed:"; gofmt -l ./cmd ./internal; exit 1; }
 
+## observability: install Prometheus and Grafana, provisioned from deploy/ (root)
+.PHONY: observability
+observability:
+	sudo ./deploy/observability/install.sh all
+
+## observability-config: re-apply dashboards, rules and scrape config (root)
+.PHONY: observability-config
+observability-config:
+	sudo ./deploy/observability/install.sh config
+
 ## server: install and configure the OpenVPN server (root)
 .PHONY: server
 server:

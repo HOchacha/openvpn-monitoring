@@ -1,0 +1,358 @@
+{
+  "uid": "ovpnmon-overview",
+  "title": "OpenVPN — sessions and destinations",
+  "description": "Who is connected to the VPN and where their traffic is going, from ovpnmon's eBPF probe and the OpenVPN management interface.",
+  "tags": ["vpn", "ovpnmon", "ebpf"],
+  "timezone": "browser",
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "server",
+        "label": "VPN server",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "ovpnmon-prometheus" },
+        "query": "label_values(openvpn_sessions, instance)",
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "user",
+        "label": "User",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "ovpnmon-prometheus" },
+        "query": "label_values(openvpn_session_info{instance=~\"$server\"}, common_name)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Health",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Connected clients",
+      "description": "Clients currently authenticated to OpenVPN.",
+      "datasource": { "type": "prometheus", "uid": "ovpnmon-prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "targets": [
+        { "expr": "sum(openvpn_sessions{instance=~\"$server\"})", "refId": "A", "legendFormat": "sessions" }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "text", "value": null } ] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Management",
+      "description": "OpenVPN's management interface. When this is down, traffic is still counted but cannot be attributed to a user.",
+      "datasource": { "type": "prometheus", "uid": "ovpnmon-prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "targets": [
+        { "expr": "min(openvpn_management_up{instance=~\"$server\"})", "refId": "A" }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "unreachable", "color": "red", "index": 0 } } },
+            { "type": "value", "options": { "1": { "text": "connected", "color": "green", "index": 1 } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Total upload",
+      "description": "Plaintext bytes seen inside the tunnel, client to internet.",
+      "datasource": { "type": "prometheus", "uid": "ovpnmon-prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "targets": [
+        { "expr": "sum(rate(openvpn_client_bytes{instance=~\"$server\",direction=\"upload\"}[5m]))", "refId": "A" }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "unit": "Bps", "color": { "mode": "fixed", "fixedColor": "blue" } }, "overrides": [] }
+    },
+    {
+      "type": "stat",
+      "title": "Total download",
+      "datasource": { "type": "prometheus", "uid": "ovpnmon-prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+      "targets": [
+        { "expr": "sum(rate(openvpn_client_bytes{instance=~\"$server\",direction=\"download\"}[5m]))", "refId": "A" }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "unit": "Bps", "color": { "mode": "fixed", "fixedColor": "purple" } }, "overrides": [] }
+    },
+    {
+      "type": "stat",
+      "title": "Tracked flows",
+      "description": "Live entries in the kernel flow map. Bounded at 65536; entries expire after flow-idle.",
+      "datasource": { "type": "prometheus", "uid": "ovpnmon-prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+      "targets": [ { "expr": "sum(openvpn_tracked_flows{instance=~\"$server\"})", "refId": "A" } ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "type": "stat",
+      "title": "Events lost",
+      "description": "Ring buffer overflows. Anything above zero means DNS/TLS observations were dropped and destinations will show as bare IPs.",
+      "datasource": { "type": "prometheus", "uid": "ovpnmon-prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+      "targets": [ { "expr": "sum(rate(openvpn_probe_events_lost{instance=~\"$server\"}[5m]))", "refId": "A" } ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 0.001 } ] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Who",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Throughput by user",
+      "description": "Plaintext traffic inside the tunnel, per client. Download is drawn negative so the two directions separate.",
+      "datasource": { "type": "prometheus", "uid": "ovpnmon-prometheus" },
+      "gridPos": { "h": 9, "w": 16, "x": 0, "y": 6 },
+      "targets": [
+        {
+          "expr": "sum by (common_name) (rate(openvpn_client_bytes{instance=~\"$server\",common_name=~\"$user\",direction=\"upload\"}[5m]))",
+          "legendFormat": "{{common_name}} ↑",
+          "refId": "A"
+        },
+        {
+          "expr": "-sum by (common_name) (rate(openvpn_client_bytes{instance=~\"$server\",common_name=~\"$user\",direction=\"download\"}[5m]))",
+          "legendFormat": "{{common_name}} ↓",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"], "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 12, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Connected clients",
+      "description": "Identity comes from the certificate common name OpenVPN verified, not from anything the client asserts.",
+      "datasource": { "type": "prometheus", "uid": "ovpnmon-prometheus" },
+      "gridPos": { "h": 9, "w": 8, "x": 16, "y": 6 },
+      "targets": [
+        {
+          "expr": "openvpn_session_duration_seconds{instance=~\"$server\",common_name=~\"$user\"} * on (common_name, virtual_ip, instance) group_left (real_address, cipher) openvpn_session_info{instance=~\"$server\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "__name__": true, "job": true, "instance": true, "vpn_server": true },
+            "renameByName": {
+              "common_name": "User",
+              "virtual_ip": "VPN IP",
+              "real_address": "Connected from",
+              "cipher": "Cipher",
+              "Value": "Online for"
+            },
+            "indexByName": { "common_name": 0, "virtual_ip": 1, "real_address": 2, "cipher": 3, "Value": 4 }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Online for" }, "properties": [ { "id": "unit", "value": "s" } ] }
+        ]
+      },
+      "options": { "showHeader": true, "sortBy": [ { "displayName": "Online for", "desc": true } ] }
+    },
+    {
+      "type": "row",
+      "title": "Where",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "table",
+      "title": "Top destinations",
+      "description": "Hostnames come from TLS SNI, HTTP Host or DNS replies. Destinations beyond ovpnmon's -top-destinations limit are folded into \"other\".",
+      "datasource": { "type": "prometheus", "uid": "ovpnmon-prometheus" },
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "expr": "topk(20, sum by (common_name, hostname) (rate(openvpn_destination_bytes{instance=~\"$server\",common_name=~\"$user\",direction=\"download\"}[5m])))",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true },
+            "renameByName": { "common_name": "User", "hostname": "Destination", "Value": "Download" }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Download" },
+            "properties": [
+              { "id": "unit", "value": "Bps" },
+              { "id": "custom.cellOptions", "value": { "type": "gauge", "mode": "gradient" } }
+            ]
+          }
+        ]
+      },
+      "options": { "showHeader": true, "sortBy": [ { "displayName": "Download", "desc": true } ] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Traffic by destination",
+      "description": "Aggregated across users. Useful for spotting a destination that suddenly dominates.",
+      "datasource": { "type": "prometheus", "uid": "ovpnmon-prometheus" },
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "expr": "topk(10, sum by (hostname) (rate(openvpn_destination_bytes{instance=~\"$server\",common_name=~\"$user\"}[5m])))",
+          "legendFormat": "{{hostname}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["max"], "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 20, "stacking": { "mode": "normal" }, "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "New connections by user",
+      "description": "TCP connections opened through the tunnel, counted at the SYN.",
+      "datasource": { "type": "prometheus", "uid": "ovpnmon-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 26 },
+      "targets": [
+        {
+          "expr": "sum by (common_name) (rate(openvpn_destination_connections{instance=~\"$server\",common_name=~\"$user\"}[5m]))",
+          "legendFormat": "{{common_name}}",
+          "refId": "A"
+        }
+      ],
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } },
+      "fieldConfig": {
+        "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" } },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Probe and history",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Packets inspected",
+      "description": "Every packet crossing the tun device passes through the eBPF programs.",
+      "datasource": { "type": "prometheus", "uid": "ovpnmon-prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 35 },
+      "targets": [
+        { "expr": "sum(rate(openvpn_probe_packets{instance=~\"$server\"}[5m]))", "legendFormat": "packets/s", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "pps", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Name resolution",
+      "description": "Destination names currently cached, and payload events delivered to userspace.",
+      "datasource": { "type": "prometheus", "uid": "ovpnmon-prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 35 },
+      "targets": [
+        { "expr": "sum(openvpn_resolved_names{instance=~\"$server\"})", "legendFormat": "names cached", "refId": "A" },
+        { "expr": "sum(rate(openvpn_probe_events{instance=~\"$server\"}[5m]))", "legendFormat": "events/s", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Audit history writes",
+      "description": "Dropped events mean the audit trail has gaps: writes are non-blocking by design so monitoring never stalls the VPN.",
+      "datasource": { "type": "prometheus", "uid": "ovpnmon-prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 35 },
+      "targets": [
+        { "expr": "sum(rate(openvpn_history_events_written{instance=~\"$server\"}[5m]))", "legendFormat": "written/s", "refId": "A" },
+        { "expr": "sum(rate(openvpn_history_events_dropped{instance=~\"$server\"}[5m]))", "legendFormat": "dropped/s", "refId": "B" },
+        { "expr": "sum(rate(openvpn_history_write_errors{instance=~\"$server\"}[5m]))", "legendFormat": "errors/s", "refId": "C" }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never" } },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": ".*(dropped|errors).*" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } }
+    }
+  ]
+}

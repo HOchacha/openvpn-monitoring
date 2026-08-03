@@ -1,0 +1,28 @@
+# Scrape configuration for ovpnmon.
+#
+# Loaded through scrape_config_files in prometheus.yml, so this file can be
+# version-controlled and replaced without editing Prometheus' main config.
+#
+# ovpnmon binds to loopback by default. Scraping it from another host means
+# either exposing -listen (and putting authentication in front of it, since the
+# endpoint reveals every user's browsing destinations) or running a Prometheus
+# agent alongside it.
+
+scrape_configs:
+  - job_name: ovpnmon
+    # Session and destination series only change as fast as clients do; the
+    # underlying counters are updated every two seconds by the collector.
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    static_configs:
+      - targets: ['127.0.0.1:9095']
+        labels:
+          # Set this per VPN server when scraping more than one.
+          vpn_server: 'primary'
+
+    # No metric_relabel_configs here on purpose. openvpn_destination_bytes is
+    # the high-cardinality series, but its labels are not safe to drop:
+    # removing port, proto or remote_ip collapses distinct destinations onto
+    # one series and Prometheus rejects the duplicates. Bound the cardinality
+    # at the source instead, with ovpnmon's -top-destinations (the remainder
+    # is already folded into hostname="other").
