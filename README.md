@@ -403,11 +403,33 @@ make observability      # Prometheus + Grafana 설치, 프로비저닝까지
 | Prometheus | `127.0.0.1:9090` | |
 | Grafana | `127.0.0.1:3000` | 최초 로그인 `admin` / `admin` |
 
-셋 다 루프백에만 바인딩합니다. 접속은 SSH 터널로:
+기본은 루프백입니다. 접속은 SSH 터널로:
 
 ```bash
 ssh -N -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 ubuntu@<host>
 ```
+
+### 외부에 노출하려면
+
+```bash
+sudo BIND_ADDR=0.0.0.0 ./deploy/observability/install.sh config
+```
+
+포트가 이미 쓰이고 있으면 `PROM_PORT`, `OVPNMON_PORT`로 바꿀 수 있습니다.
+
+**노출 전에 반드시:**
+
+1. **Grafana 비밀번호를 바꾸십시오.** 기본값 `admin/admin`으로 열면 곧바로 위험합니다.
+   ```bash
+   sudo grafana-cli admin reset-admin-password '<새 비밀번호>'
+   ```
+2. **ovpnmon과 Prometheus에는 인증이 전혀 없습니다.** 방화벽으로 접근 주소를
+   제한하거나 리버스 프록시를 앞에 두십시오. 두 엔드포인트 모두 사용자별 접속
+   호스트명 목록을 그대로 내어줍니다.
+   ```bash
+   sudo iptables -A INPUT -p tcp --dport 9095 -s <관리자대역> -j ACCEPT
+   sudo iptables -A INPUT -p tcp --dport 9095 -j DROP
+   ```
 
 ### 설정은 저장소가 원본입니다
 
