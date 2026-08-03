@@ -77,6 +77,9 @@ dist: build
 	install -m 755 deploy/dist-install.sh dist/ovpnmon-$(VERSION)/install.sh
 	install -m 755 deploy/preflight.sh dist/ovpnmon-$(VERSION)/preflight.sh
 	install -m 644 README.md dist/ovpnmon-$(VERSION)/README.md
+	@# Prometheus and Grafana are optional, but the files have to travel with
+	@# the tarball or a server that only received the tarball cannot set them up.
+	cp -r deploy/observability dist/ovpnmon-$(VERSION)/observability
 	tar -C dist -czf dist/ovpnmon-$(VERSION).tar.gz ovpnmon-$(VERSION)
 	@rm -rf dist/ovpnmon-$(VERSION)
 	@echo
