@@ -54,9 +54,42 @@ SNI/Host는 그 연결에 대해 확정적이고, DNS는 그 외 모든 트래�
 
 ## 요구 사항
 
+먼저 확인해보십시오 — 아무것도 설치하지 않고 현재 상태만 보고합니다:
+
+```bash
+make deps-check
+```
+
+```
+==> Kernel
+  ok      kernel 6.8.0           TCX attachment needs >= 6.6
+  ok      BTF                    /sys/kernel/btf/vmlinux present
+==> Build toolchain
+  ok      go 1.26.5              go.mod needs 1.26.5
+  ...
+```
+
+부족한 것이 있으면:
+
+```bash
+make deps            # 빌드 툴체인 (필요하면 Go도 공식 tarball로 설치)
+make deps-openvpn    # 이 호스트에서 OpenVPN 서버도 돌릴 경우
+make deps-dev        # 테스트·벤치마크 도구 (bpftrace, iperf3, jq …)
+make deps-all        # 위 전부
+```
+
+`make deps`는 필요한 Go 버전을 **`go.mod`에서 읽어** 판단합니다. 배포판이 제공하는
+Go가 낮으면(예: Ubuntu 24.04는 1.22) 공식 tarball을 받아 sha256을 검증한 뒤
+`/usr/local/go`에 설치합니다. 이미 충분하면 아무것도 하지 않습니다.
+apt·dnf·yum·pacman을 인식하며, 그 외 배포판에서는 필요한 패키지 목록을 알려줍니다.
+
+정리하면 요구 사항은 이렇습니다:
+
 - Linux 커널 **6.6 이상** (TCX 훅). BTF(`/sys/kernel/btf/vmlinux`) 필요
 - OpenVPN 2.4 이상, management 인터페이스 활성화
-- 빌드: Go 1.24+, clang 15+, libbpf 헤더 (`libbpf-dev`)
+- 빌드: Go (버전은 `go.mod` 기준)
+- **eBPF 재컴파일 시에만**: clang 15+, `libbpf-dev`. 컴파일된 오브젝트가 저장소에
+  포함되어 있으므로 `bpf/ovpnmon.bpf.c`를 고치지 않는 한 필요 없습니다
 - 실행: root, 또는 `CAP_BPF` + `CAP_NET_ADMIN` + `CAP_PERFMON`
 
 > **OpenVPN 2.6의 DCO 주의.** Data Channel Offload가 켜지면 데이터 경로가 `ovpn-dco`
@@ -74,9 +107,10 @@ SNI/Host는 그 연결에 대해 확정적이고, DNS는 그 외 모든 트래�
 처음부터 전부 구축하는 경우:
 
 ```bash
+make deps-all                      # 툴체인 + OpenVPN 패키지
 sudo ./deploy/setup-openvpn.sh     # PKI + 서버 설정 + NAT + 테스트 인증서(alice, bob)
-make build
-sudo ./ovpnmon -iface tun0 -subnet 10.8.0.0/24 -mgmt 127.0.0.1:7505
+make install                       # /opt/ovpnmon 에 설치
+sudo systemctl enable --now ovpnmon
 ```
 
 브라우저에서 <http://127.0.0.1:9090> 을 엽니다.

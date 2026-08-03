@@ -11,6 +11,31 @@ LDFLAGS := -X main.version=$(VERSION)
 .PHONY: all
 all: build
 
+## deps-check: report required tools and kernel features, changing nothing
+.PHONY: deps-check
+deps-check:
+	@./deploy/install-deps.sh check
+
+## deps: install the build toolchain, incl. the Go version go.mod needs (root)
+.PHONY: deps
+deps:
+	sudo ./deploy/install-deps.sh build
+
+## deps-openvpn: install packages needed to run 'make server' (root)
+.PHONY: deps-openvpn
+deps-openvpn:
+	sudo ./deploy/install-deps.sh openvpn
+
+## deps-dev: install test and benchmark tooling (root)
+.PHONY: deps-dev
+deps-dev:
+	sudo ./deploy/install-deps.sh dev
+
+## deps-all: build + openvpn + dev dependencies (root)
+.PHONY: deps-all
+deps-all:
+	sudo ./deploy/install-deps.sh all
+
 ## generate: recompile the eBPF object and regenerate its Go bindings
 .PHONY: generate
 generate:
