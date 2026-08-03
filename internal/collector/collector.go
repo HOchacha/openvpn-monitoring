@@ -151,6 +151,12 @@ type Collector struct {
 	// store can be fed increments. Touched only by scrapeLoop.
 	prevFlows map[flowKey]flowCounters
 
+	// totals accumulates those increments per live session. The kernel map is
+	// a live view - entries expire and can be evicted - so summing it would
+	// produce a figure that goes down, which is not a counter. Prometheus
+	// reads these instead.
+	totals map[netip.Addr]*sessionTotals
+
 	subMu sync.Mutex
 	subs  map[chan LiveEvent]struct{}
 }
@@ -195,6 +201,74 @@ func (c flowCounters) isZero() bool {
 	return c.tx == 0 && c.rx == 0 && c.packets == 0 && c.connections == 0
 }
 
+// maxTrackedDestinations bounds the per-session accumulator. A session that
+// runs for weeks would otherwise grow one entry per destination ever touched.
+const maxTrackedDestinations = 2000
+
+// sessionTotals is everything one connected client has done so far.
+type sessionTotals struct {
+	tx, rx uint64
+	dests  map[flowKey]*destTotals
+}
+
+type destTotals struct {
+	remoteIP   netip.Addr
+	port       uint16
+	proto      uint8
+	hostname   string
+	nameSource string
+	tx, rx     uint64
+	packets    uint64
+	conns      uint32
+	firstSeen  time.Time
+	lastSeen   time.Time
+}
+
+// add folds one scrape's increment into the running totals.
+func (s *sessionTotals) add(k flowKey, d flowCounters, f ebpfx.Flow, host, src string) {
+	s.tx += d.tx
+	s.rx += d.rx
+
+	e, ok := s.dests[k]
+	if !ok {
+		if len(s.dests) >= maxTrackedDestinations {
+			s.evictOldest()
+		}
+		e = &destTotals{
+			remoteIP: f.RemoteIP, port: f.RemotePort, proto: f.Proto,
+			firstSeen: f.FirstSeen,
+		}
+		s.dests[k] = e
+	}
+
+	e.tx += d.tx
+	e.rx += d.rx
+	e.packets += d.packets
+	e.conns += d.connections
+	e.lastSeen = f.LastSeen
+	if f.FirstSeen.Before(e.firstSeen) {
+		e.firstSeen = f.FirstSeen
+	}
+	// A later flow without an SNI must not erase a name already learned.
+	if host != "" {
+		e.hostname, e.nameSource = host, src
+	}
+}
+
+func (s *sessionTotals) evictOldest() {
+	var oldestKey flowKey
+	var oldest time.Time
+	first := true
+	for k, e := range s.dests {
+		if first || e.lastSeen.Before(oldest) {
+			oldestKey, oldest, first = k, e.lastSeen, false
+		}
+	}
+	if !first {
+		delete(s.dests, oldestKey)
+	}
+}
+
 // New loads the dataplane and prepares the collector. Call Run to start it.
 func New(cfg Config, log *slog.Logger) (*Collector, error) {
 	cfg.Defaults()
@@ -212,6 +286,7 @@ func New(cfg Config, log *slog.Logger) (*Collector, error) {
 		sessions:   make(map[netip.Addr]mgmt.Session),
 		dbSessions: make(map[netip.Addr]int64),
 		prevFlows:  make(map[flowKey]flowCounters),
+		totals:     make(map[netip.Addr]*sessionTotals),
 		subs:       make(map[chan LiveEvent]struct{}),
 		snapshot: Snapshot{
 			Interface: cfg.Interface,
@@ -293,25 +368,44 @@ func (c *Collector) runMgmtSession(ctx context.Context) error {
 	c.log.Info("connected to OpenVPN management interface", "addr", c.cfg.MgmtAddr)
 	c.setMgmtError(nil)
 
-	// Ask for push-based byte counters so per-client totals stay current
-	// between status polls.
-	cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	if err := client.EnableBytecount(cmdCtx, 5); err != nil {
-		c.log.Warn("could not enable bytecount notifications", "error", err)
-	}
-	cancel()
+	// Deliberately not enabling bytecount notifications. The numbers they
+	// carry already arrive with each status poll, so subscribing only makes
+	// the daemon push data nothing reads - and when the connection ends,
+	// those pending writes fail with a broken pipe partway through OpenVPN's
+	// management teardown. It serves one client at a time with a listen
+	// backlog of 1, so a session it fails to clean up blocks every later
+	// connection until OpenVPN itself restarts.
 
 	ticker := time.NewTicker(c.cfg.PollInterval)
 	defer ticker.Stop()
 
+	// Reconnecting is not free: OpenVPN serves one management client at a
+	// time, so churning connections is how the interface gets wedged. Ride out
+	// transient stalls on the existing connection instead of dropping it at
+	// the first slow poll.
+	const maxPollFailures = 3
+	failures := 0
+
 	for {
-		pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		pollCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		sessions, err := client.Status(pollCtx)
 		cancel()
-		if err != nil {
-			return fmt.Errorf("polling status: %w", err)
+
+		switch {
+		case err == nil:
+			failures = 0
+			c.applySessions(sessions)
+		case ctx.Err() != nil:
+			return ctx.Err()
+		default:
+			failures++
+			if failures >= maxPollFailures {
+				return fmt.Errorf("polling status failed %d times in a row: %w",
+					failures, err)
+			}
+			c.log.Warn("management poll failed, keeping the connection",
+				"attempt", failures, "of", maxPollFailures, "error", err)
 		}
-		c.applySessions(sessions)
 
 		select {
 		case <-ticker.C:
@@ -434,6 +528,9 @@ func (c *Collector) closeHistorySession(ip netip.Addr, s mgmt.Session) {
 	c.mu.Lock()
 	id, ok := c.dbSessions[ip]
 	delete(c.dbSessions, ip)
+	// The accumulated totals belong to the session that just ended; a client
+	// reconnecting onto the same address starts from zero.
+	delete(c.totals, ip)
 	c.mu.Unlock()
 	if !ok {
 		return
@@ -578,12 +675,49 @@ func (c *Collector) rebuild() {
 	healthy := c.snapshot.MgmtHealthy
 	c.mu.RUnlock()
 
+	// Fold this scrape's increments into the per-session totals first, so the
+	// snapshot below reports accumulated figures rather than whatever the
+	// kernel map happens to hold right now.
+	c.applyFlowDeltas(flows)
+
 	byClient := make(map[netip.Addr][]Destination)
 	var orphans []Destination
 
+	c.mu.RLock()
+	for ip, t := range c.totals {
+		if _, known := sessions[ip]; !known {
+			continue
+		}
+		dests := make([]Destination, 0, len(t.dests))
+		for _, e := range t.dests {
+			dests = append(dests, Destination{
+				RemoteIP:    e.remoteIP,
+				Hostname:    e.hostname,
+				NameSource:  e.nameSource,
+				Port:        e.port,
+				Proto:       protoName(e.proto),
+				Service:     serviceName(e.proto, e.port),
+				TxBytes:     e.tx,
+				RxBytes:     e.rx,
+				Packets:     e.packets,
+				Connections: e.conns,
+				FirstSeen:   e.firstSeen,
+				LastSeen:    e.lastSeen,
+			})
+		}
+		byClient[ip] = dests
+	}
+	c.mu.RUnlock()
+
+	// Traffic from addresses the management interface has not claimed is
+	// reported straight from the live map; there is no session to accumulate
+	// it against.
 	for _, f := range flows {
+		if _, known := sessions[f.ClientIP]; known {
+			continue
+		}
 		host, src, _ := c.cache.Lookup(f.ClientIP, f.RemoteIP)
-		d := Destination{
+		orphans = append(orphans, Destination{
 			RemoteIP:    f.RemoteIP,
 			Hostname:    host,
 			NameSource:  string(src),
@@ -596,12 +730,7 @@ func (c *Collector) rebuild() {
 			Connections: f.Connections,
 			FirstSeen:   f.FirstSeen,
 			LastSeen:    f.LastSeen,
-		}
-		if _, known := sessions[f.ClientIP]; known {
-			byClient[f.ClientIP] = append(byClient[f.ClientIP], d)
-		} else {
-			orphans = append(orphans, d)
-		}
+		})
 	}
 
 	views := make([]SessionView, 0, len(sessions))
@@ -646,8 +775,6 @@ func (c *Collector) rebuild() {
 		orphans = orphans[:50]
 	}
 
-	c.persistFlowDeltas(flows)
-
 	c.mu.Lock()
 	c.snapshot = Snapshot{
 		UpdatedAt:    time.Now(),
@@ -664,22 +791,22 @@ func (c *Collector) rebuild() {
 	c.mu.Unlock()
 }
 
-// persistFlowDeltas converts the kernel's running counters into increments and
-// hands them to the history store.
+// applyFlowDeltas turns the kernel's running counters into increments, folds
+// them into the per-session totals, and forwards them to the history store.
 //
 // Called only from scrapeLoop, which is what makes prevFlows safe to touch
 // without a lock.
-func (c *Collector) persistFlowDeltas(flows []ebpfx.Flow) {
-	if c.cfg.Store == nil {
-		return
-	}
-
+func (c *Collector) applyFlowDeltas(flows []ebpfx.Flow) {
 	seen := make(map[flowKey]flowCounters, len(flows))
 	batch := make([]store.Destination, 0, len(flows))
 
 	for _, f := range flows {
-		sid, known := c.historySessionID(f.ClientIP)
-		if !known {
+		c.mu.RLock()
+		_, live := c.sessions[f.ClientIP]
+		sid, inHistory := c.dbSessions[f.ClientIP]
+		c.mu.RUnlock()
+
+		if !live {
 			// Traffic from an address the management interface has not told
 			// us about yet. Deliberately not recorded in seen, so once the
 			// session appears its accumulated bytes arrive as one delta
@@ -704,27 +831,41 @@ func (c *Collector) persistFlowDeltas(flows []ebpfx.Flow) {
 		}
 
 		host, src, _ := c.cache.Lookup(f.ClientIP, f.RemoteIP)
-		batch = append(batch, store.Destination{
-			SessionID:   sid,
-			RemoteIP:    f.RemoteIP.String(),
-			Port:        f.RemotePort,
-			Proto:       protoName(f.Proto),
-			Hostname:    host,
-			NameSource:  string(src),
-			TxBytes:     d.tx,
-			RxBytes:     d.rx,
-			Packets:     d.packets,
-			Connections: d.connections,
-			FirstSeen:   f.FirstSeen,
-			LastSeen:    f.LastSeen,
-		})
+
+		c.mu.Lock()
+		t, ok := c.totals[f.ClientIP]
+		if !ok {
+			t = &sessionTotals{dests: make(map[flowKey]*destTotals)}
+			c.totals[f.ClientIP] = t
+		}
+		t.add(k, d, f, host, string(src))
+		c.mu.Unlock()
+
+		if c.cfg.Store != nil && inHistory {
+			batch = append(batch, store.Destination{
+				SessionID:   sid,
+				RemoteIP:    f.RemoteIP.String(),
+				Port:        f.RemotePort,
+				Proto:       protoName(f.Proto),
+				Hostname:    host,
+				NameSource:  string(src),
+				TxBytes:     d.tx,
+				RxBytes:     d.rx,
+				Packets:     d.packets,
+				Connections: d.connections,
+				FirstSeen:   f.FirstSeen,
+				LastSeen:    f.LastSeen,
+			})
+		}
 	}
 
 	// Replacing the map drops flows the kernel has evicted, so if one of them
 	// comes back its counters are treated as new rather than as a decrease.
 	c.prevFlows = seen
 
-	c.cfg.Store.RecordDestinations(batch)
+	if c.cfg.Store != nil {
+		c.cfg.Store.RecordDestinations(batch)
+	}
 }
 
 // ------------------------------------------------------------- accessors ---

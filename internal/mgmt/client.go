@@ -174,11 +174,35 @@ func (c *Client) command(ctx context.Context, cmd string) ([]string, error) {
 	}
 }
 
-// Close shuts the connection down. It is safe to call more than once.
+// Close ends the management session and shuts the connection down. It is safe
+// to call more than once.
+//
+// Ending the session cleanly matters more than it looks. OpenVPN serves one
+// management client at a time and its listen backlog is 1, so a dead session
+// the daemon has not noticed blocks every subsequent connection: new attempts
+// sit unaccepted in the queue and time out. The interface is then unusable
+// until OpenVPN itself restarts.
+//
+// Sending "exit" is not enough on its own - closing immediately afterwards can
+// tear the socket down before the daemon's event loop reads the command, which
+// is exactly the state that leaves it stuck. The brief pause gives it a chance
+// to observe the end of the session.
 func (c *Client) Close() error {
 	var err error
 	c.closeOnce.Do(func() {
+		_ = c.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		_, _ = fmt.Fprint(c.conn, "exit\n")
+
 		close(c.closed)
+
+		// Half-close rather than closing outright: the daemon then sees a
+		// clean EOF on its read side while its own writes still work, which
+		// is what prompts it to release the management slot. A plain close
+		// can reset the connection before it gets that far.
+		if tcp, ok := c.conn.(*net.TCPConn); ok {
+			_ = tcp.CloseWrite()
+		}
+		time.Sleep(200 * time.Millisecond)
 		err = c.conn.Close()
 	})
 	return err
