@@ -173,7 +173,7 @@ func TestClientStatus(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	c, err := Dial(ctx, addr)
+	c, err := Dial(ctx, addr, "")
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestClientCommandError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	c, err := Dial(ctx, addr)
+	c, err := Dial(ctx, addr, "")
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestClientStatusTimeout(t *testing.T) {
 
 	dialCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c, err := Dial(dialCtx, addr)
+	c, err := Dial(dialCtx, addr, "")
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -245,5 +245,106 @@ func TestClientStatusTimeout(t *testing.T) {
 
 	if _, err := c.Status(ctx); err == nil {
 		t.Error("expected a timeout when the daemon never answers")
+	}
+}
+
+// passwordServer imitates a daemon started with "management <h> <p> <pwfile>".
+func passwordServer(t *testing.T, want string) string {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		// No trailing newline: OpenVPN writes the prompt as-is.
+		_, _ = conn.Write([]byte("ENTER PASSWORD:"))
+
+		buf := make([]byte, 512)
+		n, err := conn.Read(buf)
+		if err != nil {
+			return
+		}
+		if strings.TrimSpace(string(buf[:n])) != want {
+			_, _ = conn.Write([]byte("ERROR: bad password\r\n"))
+			return
+		}
+		_, _ = conn.Write([]byte("SUCCESS: password is correct\r\n"))
+		_, _ = conn.Write([]byte(">INFO:OpenVPN Management Interface Version 5\r\n"))
+
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			if strings.HasPrefix(strings.TrimSpace(string(buf[:n])), "status 3") {
+				for _, l := range strings.Split(realStatus3, "\n") {
+					_, _ = conn.Write([]byte(l + "\n"))
+				}
+				_, _ = conn.Write([]byte("END\n"))
+			}
+		}
+	}()
+	return ln.Addr().String()
+}
+
+func TestDialWithPassword(t *testing.T) {
+	addr := passwordServer(t, "s3cret")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	c, err := Dial(ctx, addr, "s3cret")
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer c.Close()
+
+	// The greeting that follows authentication must not be mistaken for a
+	// command reply, so a normal command still works.
+	sessions, err := c.Status(ctx)
+	if err != nil {
+		t.Fatalf("Status after authenticating: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Errorf("got %d sessions, want 2", len(sessions))
+	}
+}
+
+func TestDialWrongPassword(t *testing.T) {
+	addr := passwordServer(t, "s3cret")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if _, err := Dial(ctx, addr, "wrong"); err == nil {
+		t.Fatal("a bad password was accepted")
+	} else if !strings.Contains(err.Error(), "rejected") {
+		t.Errorf("error should say the password was rejected, got %q", err)
+	}
+}
+
+// TestDialPasswordRequiredButMissing is the misconfiguration an operator hits
+// when OpenVPN has a password file and ovpnmon was not told about it.
+func TestDialPasswordRequiredButMissing(t *testing.T) {
+	addr := passwordServer(t, "s3cret")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := Dial(ctx, addr, "")
+	if err == nil {
+		t.Fatal("expected an error when the daemon demands a password")
+	}
+	if !strings.Contains(err.Error(), "mgmt-password-file") {
+		t.Errorf("error should name the setting to fix it, got %q", err)
 	}
 }

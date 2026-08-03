@@ -156,6 +156,37 @@ Verdict
   Ready. OpenVPN needs no changes, so nothing disconnects.
 ```
 
+### OpenVPN 쪽에 필요한 수정
+
+**두 줄이 전부입니다.** 그마저 이미 있으면 아무것도 바꿀 필요가 없습니다.
+
+```
+management 127.0.0.1 7505     # 필수 — 없으면 "누가"를 알 수 없습니다
+disable-dco                   # OpenVPN 2.6+ 에서 필요
+```
+
+`disable-dco`가 필요한 이유는 Data Channel Offload가 켜지면 데이터 경로가 커널 모듈로
+옮겨가 **tun 디바이스를 지나지 않기** 때문입니다. 프로브는 정상적으로 붙지만 아무것도
+세지 못합니다.
+
+management에 비밀번호를 걸어둔 서버(`management <host> <port> <pwfile>`)라면 같은
+파일을 ovpnmon에도 알려주십시오:
+
+```ini
+mgmt-password-file = /etc/openvpn/mgmt-password
+```
+
+**그 외에는 아무것도 바꾸지 않습니다:**
+
+- `status`/`status-version` 설정 불필요 — management로 `status 3`을 직접 요청합니다
+- PKI·인증서·인증 흐름에 관여하지 않습니다
+- 라우팅·방화벽·NAT를 건드리지 않습니다 (운영 서버엔 이미 있습니다)
+- 클라이언트를 끊거나 차단할 수 없습니다 — 보내는 명령은 `status 3`과 `exit` 뿐입니다
+
+> management 인터페이스는 **동시 접속을 하나만** 받습니다. 이미 다른 도구(openvpn-monitor,
+> 자체 스크립트 등)가 붙어 있다면 공존할 수 없으니 그쪽을 정리해야 합니다.
+> 그리고 이 인터페이스는 세션을 kill할 수 있으므로 반드시 루프백으로 제한하십시오.
+
 ### 중단이 필요한 경우와 아닌 경우
 
 | 작업 | 영향 |

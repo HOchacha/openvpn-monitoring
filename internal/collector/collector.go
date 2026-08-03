@@ -33,6 +33,7 @@ type Config struct {
 	Interface    string
 	VPNSubnet    netip.Prefix
 	MgmtAddr     string
+	MgmtPassword string
 	PollInterval time.Duration
 	ScrapeEvery  time.Duration
 	FlowIdle     time.Duration
@@ -358,7 +359,7 @@ func (c *Collector) mgmtLoop(ctx context.Context) {
 
 func (c *Collector) runMgmtSession(ctx context.Context) error {
 	dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	client, err := mgmt.Dial(dialCtx, c.cfg.MgmtAddr)
+	client, err := mgmt.Dial(dialCtx, c.cfg.MgmtAddr, c.cfg.MgmtPassword)
 	cancel()
 	if err != nil {
 		return err

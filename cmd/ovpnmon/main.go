@@ -16,6 +16,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -87,16 +88,17 @@ Examples:
 
 func run() error {
 	var (
-		iface    = flag.String("iface", "tun0", "tun interface to attach the eBPF probe to")
-		subnet   = flag.String("subnet", "10.8.0.0/24", "VPN client subnet, in CIDR form")
-		mgmtAddr = flag.String("mgmt", "127.0.0.1:7505", "OpenVPN management interface address")
-		listen   = flag.String("listen", "127.0.0.1:9090", "address for the dashboard, API and metrics")
-		topDest  = flag.Int("top-destinations", 20, "per-client destinations to expose as metrics (0 disables)")
-		flowIdle = flag.Duration("flow-idle", 5*time.Minute, "drop flows idle for longer than this")
-		nameTTL  = flag.Duration("name-ttl", 30*time.Minute, "how long a resolved destination name stays valid")
-		poll     = flag.Duration("poll", time.Second, "how often to poll the management interface")
-		logLevel = flag.String("log-level", "info", "debug, info, warn or error")
-		showVer  = flag.Bool("version", false, "print the version and exit")
+		iface      = flag.String("iface", "tun0", "tun interface to attach the eBPF probe to")
+		subnet     = flag.String("subnet", "10.8.0.0/24", "VPN client subnet, in CIDR form")
+		mgmtAddr   = flag.String("mgmt", "127.0.0.1:7505", "OpenVPN management interface address")
+		mgmtPwFile = flag.String("mgmt-password-file", "", "file holding the management password, when OpenVPN was started with one")
+		listen     = flag.String("listen", "127.0.0.1:9090", "address for the dashboard, API and metrics")
+		topDest    = flag.Int("top-destinations", 20, "per-client destinations to expose as metrics (0 disables)")
+		flowIdle   = flag.Duration("flow-idle", 5*time.Minute, "drop flows idle for longer than this")
+		nameTTL    = flag.Duration("name-ttl", 30*time.Minute, "how long a resolved destination name stays valid")
+		poll       = flag.Duration("poll", time.Second, "how often to poll the management interface")
+		logLevel   = flag.String("log-level", "info", "debug, info, warn or error")
+		showVer    = flag.Bool("version", false, "print the version and exit")
 
 		storeDSN  = flag.String("store", "", "history database: sqlite:<path> or mysql://<dsn> (empty disables history)")
 		retention = flag.Duration("retention", 30*24*time.Hour, "delete history older than this (0 keeps everything)")
@@ -150,10 +152,22 @@ func run() error {
 			"backend", hist.Dialect(), "retention", *retention)
 	}
 
+	// OpenVPN's management password lives in a file so it never appears in a
+	// process listing or in this config.
+	var mgmtPassword string
+	if *mgmtPwFile != "" {
+		raw, err := os.ReadFile(*mgmtPwFile)
+		if err != nil {
+			return fmt.Errorf("reading -mgmt-password-file: %w", err)
+		}
+		mgmtPassword = strings.TrimRight(string(raw), "\r\n")
+	}
+
 	col, err := collector.New(collector.Config{
 		Interface:    *iface,
 		VPNSubnet:    prefix,
 		MgmtAddr:     *mgmtAddr,
+		MgmtPassword: mgmtPassword,
 		PollInterval: *poll,
 		FlowIdle:     *flowIdle,
 		NameTTL:      *nameTTL,

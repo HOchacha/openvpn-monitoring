@@ -97,10 +97,15 @@ if [ -n "$OVPN_CONF" ]; then
 	if [ -n "$MGMT_LINE" ]; then
 		MGMT_HOST=$(echo "$MGMT_LINE" | awk '{print $2}')
 		MGMT_PORT=$(echo "$MGMT_LINE" | awk '{print $3}')
+		MGMT_PWFILE=$(echo "$MGMT_LINE" | awk '{print $4}')
 		MGMT_ADDR="$MGMT_HOST:$MGMT_PORT"
 		ok "management" "$MGMT_ADDR"
 		if [ "$MGMT_HOST" != "127.0.0.1" ] && [ "$MGMT_HOST" != "localhost" ]; then
 			note "reachable beyond loopback - it can kill sessions, so restrict it"
+		fi
+		if [ -n "$MGMT_PWFILE" ]; then
+			note "password protected ($MGMT_PWFILE)"
+			note "set in ovpnmon.conf:  mgmt-password-file = $MGMT_PWFILE"
 		fi
 	else
 		warn "management" "not enabled; ovpnmon has no source of client identities"

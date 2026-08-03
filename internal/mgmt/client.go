@@ -45,8 +45,9 @@ type Notification struct {
 type Client struct {
 	addr string
 
-	mu   sync.Mutex // serialises commands
-	conn net.Conn
+	mu     sync.Mutex // serialises commands
+	conn   net.Conn
+	reader *bufio.Reader
 
 	replies chan []string
 	notes   chan Notification
@@ -57,7 +58,10 @@ type Client struct {
 }
 
 // Dial connects to the management interface and starts demultiplexing.
-func Dial(ctx context.Context, addr string) (*Client, error) {
+//
+// password is used when the daemon was started with a password file
+// ("management <host> <port> <pwfile>"); pass an empty string when it was not.
+func Dial(ctx context.Context, addr, password string) (*Client, error) {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
@@ -67,13 +71,82 @@ func Dial(ctx context.Context, addr string) (*Client, error) {
 	c := &Client{
 		addr:    addr,
 		conn:    conn,
+		reader:  bufio.NewReaderSize(conn, 64*1024),
 		replies: make(chan []string, 4),
 		notes:   make(chan Notification, 256),
 		errs:    make(chan error, 1),
 		closed:  make(chan struct{}),
 	}
+
+	if err := c.authenticate(ctx, password); err != nil {
+		conn.Close()
+		return nil, err
+	}
+
 	go c.readLoop()
 	return c, nil
+}
+
+// authenticate handles the password prompt, if there is one.
+//
+// A daemon without a password file sends its greeting banner straight away, so
+// the prompt is what distinguishes the two cases. Anything read here that is
+// not a prompt stays buffered for readLoop, which is why the client owns the
+// bufio.Reader rather than creating one there.
+func (c *Client) authenticate(ctx context.Context, password string) error {
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = c.conn.SetReadDeadline(deadline)
+		_ = c.conn.SetWriteDeadline(deadline)
+		defer func() {
+			_ = c.conn.SetReadDeadline(time.Time{})
+			_ = c.conn.SetWriteDeadline(time.Time{})
+		}()
+	}
+
+	// Only a password-protected daemon speaks first with a prompt; peeking
+	// avoids consuming the greeting when it does not.
+	const prompt = "ENTER PASSWORD:"
+	head, err := c.reader.Peek(len(prompt))
+	if err != nil {
+		return fmt.Errorf("reading management greeting: %w", err)
+	}
+	if string(head) != prompt {
+		// No prompt: the interface is unprotected. A configured password is
+		// simply unused - worth knowing, but not worth refusing to start over.
+		return nil
+	}
+
+	if password == "" {
+		return fmt.Errorf(
+			"management interface %s requires a password; set mgmt-password-file", c.addr)
+	}
+
+	if _, err := c.reader.Discard(len(prompt)); err != nil {
+		return fmt.Errorf("consuming password prompt: %w", err)
+	}
+	if _, err := fmt.Fprintf(c.conn, "%s\n", password); err != nil {
+		return fmt.Errorf("sending management password: %w", err)
+	}
+
+	// The daemon answers "SUCCESS: password is correct" or "ERROR: bad password".
+	for {
+		line, err := c.reader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("reading password response: %w", err)
+		}
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "":
+			continue
+		case strings.HasPrefix(line, "SUCCESS:"):
+			return nil
+		case strings.HasPrefix(line, "ERROR:"):
+			return fmt.Errorf("management authentication rejected: %s", line)
+		default:
+			// Some builds echo a blank line or a banner first.
+			continue
+		}
+	}
 }
 
 // Notifications yields asynchronous daemon messages. It is never closed while
@@ -85,7 +158,7 @@ func (c *Client) Notifications() <-chan Notification { return c.notes }
 func (c *Client) Err() <-chan error { return c.errs }
 
 func (c *Client) readLoop() {
-	sc := bufio.NewScanner(c.conn)
+	sc := bufio.NewScanner(c.reader)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
 	var pending []string
