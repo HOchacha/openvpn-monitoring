@@ -91,6 +91,7 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("GET /api/events", s.handleEvents)
 	protected.HandleFunc("GET /api/users", s.handleUsers)
 	protected.HandleFunc("PUT /api/users/{common_name}/note", s.handleUserNote)
+	protected.HandleFunc("POST /api/sessions/{client_id}/kill", s.handleKillSession)
 	protected.HandleFunc("GET /api/stream", s.handleStream)
 
 	if s.store != nil {

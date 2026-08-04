@@ -148,6 +148,7 @@
   .ev .body { overflow-wrap: anywhere; }
   .k-connect .kind, .k-openvpn .kind { color: var(--good); }
   .k-disconnect .kind { color: var(--bad); }
+  .k-kill .kind { color: var(--bad); font-weight: 700; }
   .k-tls .kind { color: var(--up); }
   .k-dns .kind { color: var(--accent); }
   .k-http .kind { color: var(--warn); }
@@ -200,6 +201,14 @@
   .note .status { font-size: 12px; color: var(--muted); }
   .note .status.err { color: var(--bad); }
   .has-note { color: var(--warn); }
+  button.kill {
+    font: inherit; font-size: 11px; font-weight: 600; padding: 3px 10px;
+    cursor: pointer; border-radius: 6px; flex-shrink: 0;
+    background: transparent; color: var(--bad);
+    border: 1px solid color-mix(in srgb, var(--bad) 40%, var(--border));
+  }
+  button.kill:hover { background: color-mix(in srgb, var(--bad) 14%, transparent); }
+  button.kill:disabled { opacity: 0.5; cursor: default; }
 
   .empty { color: var(--muted); padding: 26px 16px; text-align: center; font-size: 13px; }
   .banner {
@@ -587,6 +596,8 @@ function renderUsers(users) {
         ${u.note ? '<span class="tag has-note" title="' + esc(u.note) + '">note</span>' : ""}
         <span class="meta">${meta}</span>
         ${rightSide}
+        ${s ? `<button class="kill" data-kill="${s.client_id}" data-kill-name="${esc(u.common_name)}"
+                       title="End this connection">Disconnect</button>` : ""}
       </summary>
       ${body}
       ${noteBox}
@@ -597,6 +608,15 @@ function renderUsers(users) {
     el.addEventListener("toggle", () => {
       const k = el.dataset.user;
       el.open ? openUsers.add(k) : openUsers.delete(k);
+    });
+  });
+
+  host.querySelectorAll("[data-kill]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      // The row is a <summary>; without this the click also toggles it open.
+      e.preventDefault();
+      e.stopPropagation();
+      killSession(btn.dataset.kill, btn.dataset.killName, btn);
     });
   });
 
@@ -661,6 +681,31 @@ function patchOnlineUsers(sessions) {
   if (changed) refreshUsers(); else renderUsers(usersCache);
 }
 
+async function killSession(clientId, name, btn) {
+  // Say plainly what this does. "Disconnect" reads stronger than it is: the
+  // certificate stays valid and a client that retries comes straight back.
+  const ok = confirm(
+    `Disconnect ${name}?\n\n` +
+    `This ends the current connection only. Their certificate remains valid, ` +
+    `so a client set to reconnect will be back within seconds.\n\n` +
+    `To stop them returning, revoke the certificate instead.`
+  );
+  if (!ok) return;
+
+  btn.disabled = true;
+  btn.textContent = "…";
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(clientId)}/kill`, { method: "POST" });
+    if (res.status === 401) { onUnauthorised(); return; }
+    if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
+    refreshUsers(true);
+  } catch (e) {
+    alert(`Could not disconnect ${name}: ${e.message}`);
+    btn.disabled = false;
+    btn.textContent = "Disconnect";
+  }
+}
+
 async function refreshUsers(force) {
   if (editingNotes.size) return;
   if (paused && !force) return;
@@ -679,6 +724,7 @@ function describe(ev) {
   switch (ev.kind) {
     case "connect":    return `${esc(who)} connected ${esc(ev.detail || "")}`;
     case "disconnect": return `${esc(who)} disconnected`;
+    case "kill":       return `${esc(who)} ${esc(ev.detail || "disconnected by an operator")}`;
     case "dns":        return `${esc(who)} looked up <b>${esc(ev.hostname)}</b> — ${esc(ev.detail || "")}`;
     case "tls":        return `${esc(who)} → <b>${esc(ev.hostname)}</b> <span class="ip">${esc(ev.remote_ip)}${port}</span>`;
     case "http":       return `${esc(who)} → <b>${esc(ev.hostname)}</b> <span class="ip">${esc(ev.remote_ip)}${port}</span>`;

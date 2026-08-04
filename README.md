@@ -227,6 +227,7 @@ sudo ./dev/test-client.sh down alice
 | `/api/users` | **전체 사용자** — PKI 발급자 + 접속 이력 + 현재 접속 여부 |
 | `PUT /api/users/{cn}/note` | 사용자 메모 저장 (빈 값이면 삭제) |
 | `POST /api/login` · `/api/logout` | 대시보드 로그인 |
+| `POST /api/sessions/{cid}/kill` | 접속 강제 종료 |
 | `/api/stream` | WebSocket 실시간 스트림 |
 | `/api/history/hosts` | **누가 어디로** — 목적지별 집계 |
 | `/api/history/sessions` | 접속 이력 |
@@ -593,6 +594,22 @@ metrics-token      = <긴 무작위 문자열>
 
 TLS는 아직 없습니다. 비밀번호가 평문으로 오가므로, 신뢰할 수 없는 망에 노출한다면 앞단에
 리버스 프록시로 HTTPS를 두십시오.
+
+## 접속 강제 종료
+
+Users 탭에서 접속 중인 사용자 옆의 **Disconnect** 버튼으로 연결을 끊습니다.
+`client-kill <CID>`를 보내며, 공통 이름이 아니라 client id를 쓰는 이유는 같은 이름의
+인증서를 여러 기기가 들고 있을 수 있기 때문입니다.
+
+> **이건 차단이 아니라 연결 종료입니다.** 인증서가 그대로 유효하므로, 재접속하도록
+> 설정된 클라이언트(기본값)는 몇 초 안에 돌아옵니다. 실제로 막으려면 인증서를 폐기해야
+> 합니다. 확인 대화상자에도 이 내용이 나옵니다.
+
+누가 언제 누구를 끊었는지는 활동 피드와 감사 이력에 `kill`로 남습니다:
+
+```
+02:09:05  kill  bob  disconnected by admin
+```
 
 ## 라이브 갱신 제어
 

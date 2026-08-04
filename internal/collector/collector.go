@@ -175,6 +175,11 @@ type Collector struct {
 
 	subMu sync.Mutex
 	subs  map[chan LiveEvent]struct{}
+
+	// mgmtClient is the live management connection, kept so commands can be
+	// sent from an HTTP handler. Nil whenever the connection is down.
+	mgmtMu     sync.Mutex
+	mgmtClient *mgmt.Client
 }
 
 // rateSample is one session's byte totals at a point in time.
@@ -391,6 +396,15 @@ func (c *Collector) runMgmtSession(ctx context.Context) error {
 	c.log.Info("connected to OpenVPN management interface", "addr", c.cfg.MgmtAddr)
 	c.setMgmtError(nil)
 
+	c.mgmtMu.Lock()
+	c.mgmtClient = client
+	c.mgmtMu.Unlock()
+	defer func() {
+		c.mgmtMu.Lock()
+		c.mgmtClient = nil
+		c.mgmtMu.Unlock()
+	}()
+
 	// Deliberately not enabling bytecount notifications. The numbers they
 	// carry already arrive with each status poll, so subscribing only makes
 	// the daemon push data nothing reads - and when the connection ends,
@@ -445,9 +459,12 @@ func (c *Collector) runMgmtSession(ctx context.Context) error {
 func (c *Collector) handleNotification(n mgmt.Notification) {
 	switch n.Kind {
 	case "CLIENT":
-		// >CLIENT:ESTABLISHED,<cid> and friends. The next status poll fills
-		// in the detail; surfacing it immediately just makes the UI feel live.
-		c.emit(LiveEvent{Time: time.Now(), Kind: "openvpn", Detail: n.Body})
+		// >CLIENT:ESTABLISHED,<cid> and friends. Deliberately not surfaced:
+		// they carry a client id and nothing else, status polling already
+		// produces a named connect/disconnect for the same moment, and a
+		// single disconnect emits enough of them to push the events that
+		// matter out of the feed. Killing one client produced fifty.
+		c.log.Debug("openvpn client notification", "body", n.Body)
 	case "INFO", "BYTECOUNT_CLI", "BYTECOUNT":
 		// Not interesting on its own; status polling carries the numbers.
 	default:
@@ -915,6 +932,49 @@ func (c *Collector) rateFor(ip netip.Addr, tx, rx uint64, now time.Time) (float6
 		return 0, 0
 	}
 	return float64(tx-prev.tx) / elapsed, float64(rx-prev.rx) / elapsed
+}
+
+// KillSession disconnects a connected client and records that it happened.
+//
+// The event goes through the same path as everything else the collector
+// observes, so it lands in the activity feed and the audit history alongside
+// the connect and disconnect it sits between.
+func (c *Collector) KillSession(ctx context.Context, clientID uint32, who string) error {
+	c.mgmtMu.Lock()
+	client := c.mgmtClient
+	c.mgmtMu.Unlock()
+
+	if client == nil {
+		return errors.New("management interface is not connected")
+	}
+
+	// Resolve the name before the session disappears from the poll.
+	var cn string
+	var ip netip.Addr
+	c.mu.RLock()
+	for addr, s := range c.sessions {
+		if s.ClientID == clientID {
+			cn, ip = s.CommonName, addr
+			break
+		}
+	}
+	c.mu.RUnlock()
+	if cn == "" {
+		return fmt.Errorf("no connected client with id %d", clientID)
+	}
+
+	if err := client.KillClient(ctx, clientID); err != nil {
+		return err
+	}
+
+	c.log.Warn("client disconnected by operator",
+		"common_name", cn, "client_id", clientID, "by", who)
+	c.emit(LiveEvent{
+		Time: time.Now(), Kind: "kill",
+		CommonName: cn, ClientIP: ip,
+		Detail: "disconnected by " + who,
+	})
+	return nil
 }
 
 // ------------------------------------------------------------- accessors ---

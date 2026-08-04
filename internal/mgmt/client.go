@@ -421,3 +421,25 @@ func parseRoute(s string) (netip.Prefix, error) {
 	}
 	return netip.PrefixFrom(addr, addr.BitLen()), nil
 }
+
+// KillClient disconnects one connected client by its OpenVPN client id.
+//
+// This ends the current connection; it is not a ban. A client configured to
+// keep trying - which is the default - will reconnect within seconds, because
+// its certificate is still valid. Revoking the certificate is what stops
+// someone from coming back.
+//
+// The client id is used rather than the common name because two devices can
+// hold certificates with the same name, and "kill <cn>" would disconnect both.
+func (c *Client) KillClient(ctx context.Context, clientID uint32) error {
+	reply, err := c.command(ctx, fmt.Sprintf("client-kill %d", clientID))
+	if err != nil {
+		return err
+	}
+	for _, l := range reply {
+		if strings.HasPrefix(l, "ERROR:") {
+			return fmt.Errorf("client-kill rejected: %s", strings.TrimPrefix(l, "ERROR: "))
+		}
+	}
+	return nil
+}

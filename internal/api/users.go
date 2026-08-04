@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -153,9 +154,8 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 
 // handleUserNote stores an operator's note about a user.
 //
-// This is the only endpoint that writes. There is no authentication in front
-// of it, so it is deliberately limited to free text against a name: it cannot
-// disconnect anyone, change what is monitored, or reach the VPN.
+// Free text against a name, capped and escaped on display, since it is
+// operator input that gets rendered back to an operator.
 func (s *Server) handleUserNote(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil {
 		http.Error(w, "notes need history enabled (-store)", http.StatusNotImplemented)
@@ -183,5 +183,38 @@ func (s *Server) handleUserNote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.log.Info("user note updated", "common_name", cn, "cleared", strings.TrimSpace(body.Note) == "")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleKillSession disconnects a connected client.
+//
+// This ends a connection; it does not revoke anything. The client's
+// certificate is still valid, so a client that retries - the default - will be
+// back within seconds. That distinction is stated in the UI too, because
+// "disconnect" reads like a stronger action than it is.
+func (s *Server) handleKillSession(w http.ResponseWriter, r *http.Request) {
+	raw := r.PathValue("client_id")
+	id, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil {
+		http.Error(w, "client id must be a number", http.StatusBadRequest)
+		return
+	}
+
+	who := "an operator"
+	if s.auth != nil {
+		who = s.auth.user
+	}
+
+	if err := s.col.KillSession(r.Context(), uint32(id), who); err != nil {
+		s.log.Warn("could not disconnect client",
+			"client_id", id, "by", who, "error", err)
+		// A client that has already gone is not a server error.
+		if strings.Contains(err.Error(), "no connected client") {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
