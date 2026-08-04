@@ -62,24 +62,43 @@ fi
 
 section "OpenVPN"
 
-OVPN_PID=$(pgrep -x openvpn | head -1)
+# Find the *server*, not just any openvpn process. A client can be running on
+# the same host - a test client, or a machine that is both - and inspecting its
+# config would report on the wrong side of the tunnel entirely.
+config_of() {  # $1 = pid -> path, or empty
+	local cmdline conf cwd
+	cmdline=$(tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null) || return
+	conf=$(echo "$cmdline" | grep -oP '(?<=--config )\S+' | head -1)
+	[ -n "$conf" ] || return
+	cwd=$(readlink -f "/proc/$1/cwd" 2>/dev/null)
+	for candidate in "$conf" "$cwd/$conf"; do
+		[ -n "$candidate" ] && [ -f "$candidate" ] && { echo "$candidate"; return; }
+	done
+}
+
+OVPN_PID=""
+OVPN_CONF=""
+for pid in $(pgrep -x openvpn); do
+	conf=$(config_of "$pid")
+	[ -n "$conf" ] || continue
+	# "server" or "mode server" is what distinguishes it from a client config.
+	if grep -qE '^\s*(server\s|mode\s+server)' "$conf" 2>/dev/null; then
+		OVPN_PID=$pid
+		OVPN_CONF=$conf
+		break
+	fi
+done
+
+# Fall back to any openvpn process, so a server whose config could not be read
+# is still reported as running rather than as absent.
+[ -n "$OVPN_PID" ] || OVPN_PID=$(pgrep -x openvpn | head -1)
+
 if [ -z "$OVPN_PID" ]; then
 	bad "openvpn" "no running process found"
 	BLOCKERS=$((BLOCKERS + 1))
 else
 	OVPN_VER=$(openvpn --version 2>/dev/null | head -1 | awk '{print $2}')
 	ok "openvpn ${OVPN_VER:-?}" "pid $OVPN_PID"
-fi
-
-# Find the config the running server uses, so advice points at the right file.
-OVPN_CONF=""
-if [ -n "$OVPN_PID" ]; then
-	CMDLINE=$(tr '\0' ' ' < "/proc/$OVPN_PID/cmdline" 2>/dev/null)
-	CONF_ARG=$(echo "$CMDLINE" | grep -oP '(?<=--config )\S+' | head -1)
-	CWD=$(readlink -f "/proc/$OVPN_PID/cwd" 2>/dev/null)
-	for candidate in "$CONF_ARG" "$CWD/$CONF_ARG"; do
-		[ -n "$candidate" ] && [ -f "$candidate" ] && { OVPN_CONF=$candidate; break; }
-	done
 fi
 if [ -n "$OVPN_CONF" ]; then
 	ok "config" "$OVPN_CONF"
@@ -144,6 +163,19 @@ elif [ -n "${OVPN_VER:-}" ] && ver_ge "${OVPN_VER:-0}" 2.6; then
 	RESTART_NEEDED=1
 else
 	ok "DCO" "not applicable on OpenVPN ${OVPN_VER:-<2.6}"
+fi
+
+# --- CRL verification ---
+# Without this, revoking a certificate changes nothing: the holder keeps
+# connecting. Only worth reporting when a PKI is present to revoke from.
+if [ -n "$OVPN_CONF" ]; then
+	if grep -qE '^\s*crl-verify' "$OVPN_CONF" 2>/dev/null; then
+		ok "CRL" "revocation is enforced"
+	else
+		warn "CRL" "no crl-verify: revoked certificates would still connect"
+		note "add to $OVPN_CONF:  crl-verify crl.pem"
+		note "needed only if you plan to revoke certificates from ovpnmon"
+	fi
 fi
 
 # ---------------------------------------------------------------- interface --

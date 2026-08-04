@@ -977,6 +977,16 @@ func (c *Collector) KillSession(ctx context.Context, clientID uint32, who string
 	return nil
 }
 
+// RecordAdminEvent notes an administrative action in the activity feed and
+// the audit history. These have no packet behind them - they are things an
+// operator did - but they belong on the same timeline as what they affect.
+func (c *Collector) RecordAdminEvent(kind, commonName, detail string) {
+	c.emit(LiveEvent{
+		Time: time.Now(), Kind: kind,
+		CommonName: commonName, Detail: detail,
+	})
+}
+
 // ------------------------------------------------------------- accessors ---
 
 // Snapshot returns the most recent view.

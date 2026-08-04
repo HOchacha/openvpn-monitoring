@@ -149,6 +149,9 @@
   .k-connect .kind, .k-openvpn .kind { color: var(--good); }
   .k-disconnect .kind { color: var(--bad); }
   .k-kill .kind { color: var(--bad); font-weight: 700; }
+  .k-cert_issue .kind { color: var(--good); font-weight: 700; }
+  .k-cert_revoke .kind { color: var(--bad); font-weight: 700; }
+  .k-profile_download .kind { color: var(--warn); }
   .k-tls .kind { color: var(--up); }
   .k-dns .kind { color: var(--accent); }
   .k-http .kind { color: var(--warn); }
@@ -209,6 +212,14 @@
   }
   button.kill:hover { background: color-mix(in srgb, var(--bad) 14%, transparent); }
   button.kill:disabled { opacity: 0.5; cursor: default; }
+  .act {
+    font: inherit; font-size: 11px; font-weight: 600; padding: 3px 10px;
+    cursor: pointer; border-radius: 6px; flex-shrink: 0; text-decoration: none;
+    background: transparent; color: var(--muted); border: 1px solid var(--border);
+  }
+  .act:hover { color: var(--text); }
+  .act.danger { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); }
+  .act:disabled { opacity: 0.5; cursor: default; }
 
   .empty { color: var(--muted); padding: 26px 16px; text-align: center; font-size: 13px; }
   .banner {
@@ -325,6 +336,11 @@
       </div>
 
       <div id="viewUsers">
+        <form id="issueForm" class="filters hidden">
+          <input name="common_name" placeholder="new user (letters, digits, . _ -)" autocomplete="off" required>
+          <button type="submit">Issue certificate</button>
+          <span class="status" id="issueStatus"></span>
+        </form>
         <div id="users"><div class="empty">Loading users…</div></div>
       </div>
 
@@ -598,6 +614,11 @@ function renderUsers(users) {
         ${rightSide}
         ${s ? `<button class="kill" data-kill="${s.client_id}" data-kill-name="${esc(u.common_name)}"
                        title="End this connection">Disconnect</button>` : ""}
+        ${certsEnabled && u.cert_status === "valid" ? `
+          <a class="act" href="/api/certificates/${encodeURIComponent(u.common_name)}/profile"
+             download title="Download .ovpn (contains the private key)">Profile</a>
+          <button class="act danger" data-revoke="${esc(u.common_name)}"
+                  title="Revoke this certificate">Revoke</button>` : ""}
       </summary>
       ${body}
       ${noteBox}
@@ -609,6 +630,17 @@ function renderUsers(users) {
       const k = el.dataset.user;
       el.open ? openUsers.add(k) : openUsers.delete(k);
     });
+  });
+
+  host.querySelectorAll("[data-revoke]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      revokeCert(btn.dataset.revoke, btn);
+    });
+  });
+  // A download link inside <summary> would otherwise toggle the row open.
+  host.querySelectorAll("a.act").forEach((a) => {
+    a.addEventListener("click", (e) => e.stopPropagation());
   });
 
   host.querySelectorAll("[data-kill]").forEach((btn) => {
@@ -681,6 +713,65 @@ function patchOnlineUsers(sessions) {
   if (changed) refreshUsers(); else renderUsers(usersCache);
 }
 
+let certsEnabled = false;
+
+// Certificate actions only appear when the server has a writable PKI; probing
+// once avoids offering buttons that can only return 501.
+async function checkCerts() {
+  try {
+    const res = await fetch("/api/certificates/__probe__/profile");
+    // 501 means no PKI is configured; anything else means the route is live
+    // (400 for the deliberately invalid name, 404 for a missing certificate).
+    certsEnabled = res.status !== 501;
+  } catch { certsEnabled = false; }
+  $("issueForm").classList.toggle("hidden", !certsEnabled);
+}
+
+$("issueForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const name = new FormData(e.target).get("common_name").trim();
+  const status = $("issueStatus");
+  status.className = "status";
+  status.textContent = "issuing…";
+  try {
+    const res = await fetch("/api/certificates", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ common_name: name }),
+    });
+    if (res.status === 401) { onUnauthorised(); return; }
+    if (!res.ok) throw new Error((await res.text()).trim().split("\n")[0] || res.statusText);
+    e.target.reset();
+    status.textContent = `${name} issued`;
+    setTimeout(() => { status.textContent = ""; }, 3000);
+    refreshUsers(true);
+  } catch (err) {
+    status.className = "status err";
+    status.textContent = err.message;
+  }
+});
+
+async function revokeCert(name, btn) {
+  if (!confirm(
+    `Revoke the certificate for ${name}?\n\n` +
+    `This cannot be undone - a new certificate would have to be issued.\n` +
+    `Anyone already connected stays connected until they reconnect.`
+  )) return;
+
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/certificates/${encodeURIComponent(name)}`, { method: "DELETE" });
+    if (res.status === 401) { onUnauthorised(); return; }
+    if (!res.ok) throw new Error((await res.text()).trim().split("\n")[0] || res.statusText);
+    const info = await res.json();
+    if (info.advice) alert(info.advice);
+    refreshUsers(true);
+  } catch (err) {
+    alert(`Could not revoke ${name}: ${err.message}`);
+    btn.disabled = false;
+  }
+}
+
 async function killSession(clientId, name, btn) {
   // Say plainly what this does. "Disconnect" reads stronger than it is: the
   // certificate stays valid and a client that retries comes straight back.
@@ -725,6 +816,10 @@ function describe(ev) {
     case "connect":    return `${esc(who)} connected ${esc(ev.detail || "")}`;
     case "disconnect": return `${esc(who)} disconnected`;
     case "kill":       return `${esc(who)} ${esc(ev.detail || "disconnected by an operator")}`;
+    case "cert_issue":
+    case "cert_revoke":
+    case "profile_download":
+                       return `${esc(who)} — ${esc(ev.detail || ev.kind)}`;
     case "dns":        return `${esc(who)} looked up <b>${esc(ev.hostname)}</b> — ${esc(ev.detail || "")}`;
     case "tls":        return `${esc(who)} → <b>${esc(ev.hostname)}</b> <span class="ip">${esc(ev.remote_ip)}${port}</span>`;
     case "http":       return `${esc(who)} → <b>${esc(ev.hostname)}</b> <span class="ip">${esc(ev.remote_ip)}${port}</span>`;
@@ -930,6 +1025,7 @@ function onUnauthorised() {
 
 async function start() {
   if (!(await checkAuth())) return;
+  await checkCerts();
   connect();
   refreshUsers();
 }

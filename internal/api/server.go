@@ -39,6 +39,18 @@ type Server struct {
 
 	// auth is nil when no credentials are configured, leaving everything open.
 	auth *Auth
+
+	// pkiMgr is nil when no writable easy-rsa installation was found, which
+	// leaves certificate management unavailable rather than half-working.
+	pkiMgr     *pki.Manager
+	serverConf string
+}
+
+// WithCertManager enables issuing and revoking certificates.
+func (s *Server) WithCertManager(m *pki.Manager, serverConf string) *Server {
+	s.pkiMgr = m
+	s.serverConf = serverConf
+	return s
 }
 
 // WithAuth puts the dashboard and API behind a login.
@@ -92,6 +104,9 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("GET /api/users", s.handleUsers)
 	protected.HandleFunc("PUT /api/users/{common_name}/note", s.handleUserNote)
 	protected.HandleFunc("POST /api/sessions/{client_id}/kill", s.handleKillSession)
+	protected.HandleFunc("POST /api/certificates", s.handleIssueCert)
+	protected.HandleFunc("DELETE /api/certificates/{common_name}", s.handleRevokeCert)
+	protected.HandleFunc("GET /api/certificates/{common_name}/profile", s.handleDownloadProfile)
 	protected.HandleFunc("GET /api/stream", s.handleStream)
 
 	if s.store != nil {

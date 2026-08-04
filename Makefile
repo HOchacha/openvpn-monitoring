@@ -86,7 +86,6 @@ install: build
 	sudo install -d -m 755 $(PREFIX)/bin $(PREFIX)/etc
 	sudo install -d -m 700 $(PREFIX)/data
 	sudo install -m 755 $(BIN) $(PREFIX)/bin/$(BIN)
-	sudo install -m 755 deploy/ovpn-firewall.sh $(PREFIX)/bin/ovpn-firewall
 	sudo install -m 644 README.md $(PREFIX)/README.md
 	@# Never clobber a config the operator has edited.
 	@if [ -f $(PREFIX)/etc/ovpnmon.conf ]; then \
@@ -103,8 +102,7 @@ install: build
 .PHONY: uninstall
 uninstall:
 	-sudo systemctl disable --now ovpnmon 2>/dev/null
-	-sudo systemctl disable --now ovpn-firewall 2>/dev/null
-	sudo rm -f /etc/systemd/system/ovpnmon.service /etc/systemd/system/ovpn-firewall.service
+	sudo rm -f /etc/systemd/system/ovpnmon.service
 	sudo systemctl daemon-reload
 	sudo rm -rf $(PREFIX)/bin $(PREFIX)/etc $(PREFIX)/README.md
 	@echo "removed. history kept at $(PREFIX)/data - 'make purge' deletes it too"

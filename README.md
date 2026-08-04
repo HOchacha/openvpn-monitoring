@@ -228,6 +228,9 @@ sudo ./dev/test-client.sh down alice
 | `PUT /api/users/{cn}/note` | 사용자 메모 저장 (빈 값이면 삭제) |
 | `POST /api/login` · `/api/logout` | 대시보드 로그인 |
 | `POST /api/sessions/{cid}/kill` | 접속 강제 종료 |
+| `POST /api/certificates` | 인증서 발급 |
+| `DELETE /api/certificates/{cn}` | 인증서 폐기 (+CRL 갱신) |
+| `GET /api/certificates/{cn}/profile` | `.ovpn` 다운로드 |
 | `/api/stream` | WebSocket 실시간 스트림 |
 | `/api/history/hosts` | **누가 어디로** — 목적지별 집계 |
 | `/api/history/sessions` | 접속 이력 |
@@ -594,6 +597,46 @@ metrics-token      = <긴 무작위 문자열>
 
 TLS는 아직 없습니다. 비밀번호가 평문으로 오가므로, 신뢰할 수 없는 망에 노출한다면 앞단에
 리버스 프록시로 HTTPS를 두십시오.
+
+## 인증서 관리
+
+기본은 **꺼져 있습니다.** easyrsa를 root로 실행하고 개인키를 내보내므로, 트래픽을 보는
+것과는 권한의 성격이 다릅니다.
+
+```ini
+manage-certificates = true
+server-conf = /etc/openvpn/server/server.conf
+vpn-host = vpn.example.com      # 생성되는 프로파일이 접속할 주소
+```
+
+Users 탭 상단에서 발급하고, 각 사용자 옆에서 **Profile** 다운로드와 **Revoke**를 합니다.
+전부 감사 이력에 남습니다 (`cert_issue`, `cert_revoke`, `profile_download`).
+
+### 폐기가 실제로 효력을 가지려면
+
+`server.conf`에 **`crl-verify`가 없으면 폐기는 아무것도 막지 못합니다.** 폐기된 사용자가
+그대로 재접속합니다. 실제로 확인한 결과입니다:
+
+```
+crl-verify 없음  → 폐기 후에도 접속 성공
+crl-verify 있음  → VERIFY ERROR: certificate revoked: CN=testuser
+```
+
+폐기 응답이 이 상태를 알려주고, `make preflight`도 검사합니다.
+
+```json
+{"revoked": true, "crl_enforced": false, "still_online": true,
+ "advice": "The server config has no crl-verify line, so this revocation is not enforced..."}
+```
+
+이미 접속 중인 사용자는 폐기해도 **그 연결이 끊기지 않습니다** — CRL은 접속할 때 확인합니다.
+즉시 적용하려면 Disconnect를 함께 누르십시오.
+
+> **`.ovpn`에는 클라이언트 개인키가 들어 있습니다.** TLS가 없는 지금은 그 키가 평문으로
+> 네트워크를 건너갑니다. 신뢰할 수 없는 망에서 쓰지 마십시오.
+
+`manage-certificates`를 켜면 systemd 유닛이 `/etc/openvpn`에 쓸 수 있어야 합니다
+(`ReadWritePaths`에 포함되어 있습니다). 끄면 그 경로는 쓰이지 않습니다.
 
 ## 접속 강제 종료
 

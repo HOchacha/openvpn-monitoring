@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/netip"
 	"os"
 	"os/signal"
@@ -26,6 +27,7 @@ import (
 	"github.com/ubuntu/openvpn-monitoring/internal/api"
 	"github.com/ubuntu/openvpn-monitoring/internal/collector"
 	"github.com/ubuntu/openvpn-monitoring/internal/metrics"
+	"github.com/ubuntu/openvpn-monitoring/internal/pki"
 	"github.com/ubuntu/openvpn-monitoring/internal/store"
 )
 
@@ -111,6 +113,12 @@ func run() error {
 		authTTL      = flag.Duration("auth-session-ttl", 12*time.Hour, "how long a dashboard login lasts")
 		metricsToken = flag.String("metrics-token", "", "bearer token letting Prometheus scrape /metrics without a login")
 		hashPassword = flag.String("hash-password", "", "print a bcrypt hash for the given password and exit")
+
+		manageCerts = flag.Bool("manage-certificates", false, "allow issuing and revoking client certificates from the dashboard")
+		serverConf  = flag.String("server-conf", "/etc/openvpn/server/server.conf", "OpenVPN config, checked for crl-verify when revoking")
+		vpnHost     = flag.String("vpn-host", "", "address clients use to reach this VPN, written into generated profiles (defaults to this host's outbound address)")
+		vpnPort     = flag.Int("vpn-port", 1194, "port written into generated profiles")
+		vpnProto    = flag.String("vpn-proto", "udp", "protocol written into generated profiles")
 
 		configPath = flag.String("config", defaultConfigPath, "configuration file; command-line flags win over it")
 	)
@@ -227,6 +235,31 @@ func run() error {
 		log.Info("dashboard authentication enabled", "user", *authUser)
 	}
 
+	// Certificate management stays off unless asked for: it runs easyrsa as
+	// root and hands out private keys, which is a different level of authority
+	// from watching traffic.
+	var certMgr *pki.Manager
+	if *manageCerts {
+		certMgr = pki.FindManager(*pkiIndex)
+		switch {
+		case certMgr == nil:
+			log.Warn("certificate management requested but no easy-rsa installation was found",
+				"hint", "set pki-index to the index.txt of the PKI to manage")
+		default:
+			certMgr.RemoteHost = *vpnHost
+			if certMgr.RemoteHost == "" {
+				certMgr.RemoteHost = outboundAddr()
+			}
+			certMgr.RemotePort, certMgr.Proto = *vpnPort, *vpnProto
+			log.Info("certificate management enabled",
+				"pki", certMgr.Dir, "profiles_point_at", certMgr.RemoteHost)
+			if !certMgr.CRLActive(*serverConf) {
+				log.Warn("server config has no crl-verify; revoking a certificate will not stop that client connecting",
+					"config", *serverConf)
+			}
+		}
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 
@@ -239,7 +272,8 @@ func run() error {
 		defer wg.Done()
 		srv := api.New(col, reg, hist, log).
 			WithPKI(*pkiIndex, *serverCN).
-			WithAuth(guard)
+			WithAuth(guard).
+			WithCertManager(certMgr, *serverConf)
 		srvErr = api.Serve(ctx, *listen, srv.Handler(), log)
 	}()
 
@@ -253,4 +287,16 @@ func run() error {
 	}
 	log.Info("shut down cleanly")
 	return nil
+}
+
+// outboundAddr reports the address this host uses to reach the internet, which
+// is the best guess for what a client should connect to.
+func outboundAddr() string {
+	c, err := net.Dial("udp", "1.1.1.1:53")
+	if err != nil {
+		return ""
+	}
+	defer c.Close()
+	host, _, _ := net.SplitHostPort(c.LocalAddr().String())
+	return host
 }

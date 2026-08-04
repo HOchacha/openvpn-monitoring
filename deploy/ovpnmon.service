@@ -22,8 +22,12 @@ NoNewPrivileges=yes
 
 ProtectSystem=strict
 ProtectHome=yes
-# The only path ovpnmon writes to.
+# The paths ovpnmon writes to. /etc/openvpn is needed only when
+# manage-certificates is on - easyrsa writes into the PKI and the regenerated
+# CRL is published next to the server config. Harmless when that is off, since
+# nothing else here touches it.
 ReadWritePaths=/opt/ovpnmon/data
+ReadWritePaths=-/etc/openvpn
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelLogs=yes
