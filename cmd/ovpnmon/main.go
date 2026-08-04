@@ -103,6 +103,9 @@ func run() error {
 		storeDSN  = flag.String("store", "", "history database: sqlite:<path> or mysql://<dsn> (empty disables history)")
 		retention = flag.Duration("retention", 30*24*time.Hour, "delete history older than this (0 keeps everything)")
 
+		pkiIndex = flag.String("pki-index", "", "easy-rsa index.txt, for listing users who have never connected (auto-detected when empty)")
+		serverCN = flag.String("server-cn", "server", "common name of the server's own certificate, excluded from the user list")
+
 		configPath = flag.String("config", defaultConfigPath, "configuration file; command-line flags win over it")
 	)
 	flag.Usage = func() {
@@ -204,7 +207,7 @@ func run() error {
 	}()
 	go func() {
 		defer wg.Done()
-		srv := api.New(col, reg, hist, log)
+		srv := api.New(col, reg, hist, log).WithPKI(*pkiIndex, *serverCN)
 		srvErr = api.Serve(ctx, *listen, srv.Handler(), log)
 	}()
 

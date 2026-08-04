@@ -224,6 +224,7 @@ sudo ./dev/test-client.sh down alice
 | `/api/snapshot` | 세션·목적지·프로브 통계 전체 |
 | `/api/sessions` | 세션 목록 (`?common_name=alice`로 필터) |
 | `/api/events` | 최근 라이브 이벤트 (메모리) |
+| `/api/users` | **전체 사용자** — PKI 발급자 + 접속 이력 + 현재 접속 여부 |
 | `/api/stream` | WebSocket 실시간 스트림 |
 | `/api/history/hosts` | **누가 어디로** — 목적지별 집계 |
 | `/api/history/sessions` | 접속 이력 |
@@ -404,7 +405,7 @@ Prometheus 쪽도 `prometheus.yml`을 직접 편집하지 않고 `scrape_config_
 
 `VPN / OpenVPN — sessions and destinations`. 서버·사용자 변수로 필터할 수 있습니다.
 
-- **Health** — 접속자 수, management 연결 상태, 총 업/다운로드, 추적 플로우, 유실 이벤트
+- **Health** — 접속자 수, management 연결 상태, 업/다운로드 **속도와 누적**, 추적 플로우, 유실 이벤트
 - **Who** — 사용자별 처리량(다운로드는 음수로 그려 방향 분리), 접속자 테이블
   (인증서 CN·VPN IP·접속 출발지·암호화 방식·접속 시간)
 - **Where** — 목적지 Top 20 테이블, 목적지별 트래픽 추이, 사용자별 신규 연결 수
@@ -560,3 +561,22 @@ make generate     # eBPF 재컴파일 + Go 바인딩 생성
 make vet          # go vet + gofmt 확인
 make test-root    # 커널 verifier 테스트 포함 전체 테스트
 ```
+
+## Users 탭
+
+사용자 목록은 easy-rsa `index.txt`(발급된 전체 사용자와 인증서 상태), 이력 DB(접속 횟수와
+누적 트래픽), management(현재 접속)를 합쳐 만듭니다. **접속이 끊겨도 목록에서 사라지지
+않습니다.**
+
+PKI 경로는 관용적 위치에서 자동 탐지하며, 다른 곳에 있으면 지정합니다:
+
+```ini
+pki-index = /path/to/pki/index.txt
+server-cn = server              # 서버 인증서는 사용자 목록에서 제외
+```
+
+PKI를 읽지 못해도 동작합니다 — 목록이 "접속한 적 있는 사용자"로 좁아집니다.
+
+트래픽은 **현재 속도**(큰 숫자)와 **세션 시작 이후 누적**(작은 숫자)을 함께 보여줍니다.
+`tunnel_bytes_*`는 OpenVPN이 세는 암호화된 바이트, `flow_*`는 프로브가 터널 내부에서 본
+평문 바이트로, 후자가 목적지별로 귀속됩니다.

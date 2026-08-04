@@ -219,6 +219,17 @@ func (s *Store) TopHosts(ctx context.Context, f Filter) ([]HostSummary, error) {
 	return out, rows.Err()
 }
 
+// UserSummary is everything the history knows about one common name.
+type UserSummary struct {
+	CommonName  string    `json:"common_name"`
+	Sessions    int       `json:"session_count"`
+	FirstSeen   time.Time `json:"first_seen"`
+	LastSeen    time.Time `json:"last_seen"`
+	TotalTx     uint64    `json:"total_tx_bytes"`
+	TotalRx     uint64    `json:"total_rx_bytes"`
+	LastAddress string    `json:"last_address,omitempty"`
+}
+
 // Counts reports how much history is held.
 type Counts struct {
 	Sessions     int64      `json:"sessions"`
@@ -251,4 +262,67 @@ func (s *Store) Counts(ctx context.Context) (Counts, error) {
 		c.Oldest = &t
 	}
 	return c, nil
+}
+
+// Users aggregates the history per common name: how often each has connected,
+// when, and how much traffic they moved in total.
+//
+// Destination bytes are summed through a subquery rather than a plain join,
+// because joining sessions to destinations directly multiplies each session
+// row by its destination count and inflates the session counter.
+func (s *Store) Users(ctx context.Context, f Filter) ([]UserSummary, error) {
+	where, args := f.where("s.common_name", "", "", "s.connected_at", "")
+	args = append(args, f.limit())
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT s.common_name,
+		        COUNT(*),
+		        MIN(s.connected_at),
+		        MAX(COALESCE(s.disconnected_at, s.connected_at)),
+		        COALESCE(SUM(t.tx), 0),
+		        COALESCE(SUM(t.rx), 0)
+		 FROM sessions s
+		 LEFT JOIN (
+		     SELECT session_id, SUM(tx_bytes) AS tx, SUM(rx_bytes) AS rx
+		     FROM destinations GROUP BY session_id
+		 ) t ON t.session_id = s.id`+where+`
+		 GROUP BY s.common_name
+		 ORDER BY MAX(COALESCE(s.disconnected_at, s.connected_at)) DESC
+		 LIMIT ?`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying users: %w", err)
+	}
+	defer rows.Close()
+
+	var out []UserSummary
+	for rows.Next() {
+		var (
+			u           UserSummary
+			first, last int64
+		)
+		if err := rows.Scan(&u.CommonName, &u.Sessions, &first, &last,
+			&u.TotalTx, &u.TotalRx); err != nil {
+			return nil, err
+		}
+		u.FirstSeen = time.Unix(first, 0)
+		u.LastSeen = time.Unix(last, 0)
+		out = append(out, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// The most recent source address per user, for the "last connected from"
+	// column. Done separately so the aggregate above stays a single scan.
+	for i := range out {
+		var addr string
+		err := s.db.QueryRowContext(ctx,
+			`SELECT real_address FROM sessions
+			 WHERE common_name = ? ORDER BY connected_at DESC LIMIT 1`,
+			out[i].CommonName).Scan(&addr)
+		if err == nil {
+			out[i].LastAddress = addr
+		}
+	}
+	return out, nil
 }

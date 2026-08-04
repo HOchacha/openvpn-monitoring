@@ -79,6 +79,7 @@
   }
   .stat .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
   .stat .value { font-size: 22px; font-weight: 620; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .stat .sub { color: var(--muted); font-size: 11px; margin-top: 2px; font-variant-numeric: tabular-nums; }
 
   .layout { display: grid; gap: 20px; grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr); }
   @media (max-width: 1050px) { .layout { grid-template-columns: minmax(0, 1fr); } }
@@ -106,6 +107,9 @@
   .session .vip { font-family: var(--mono); color: var(--accent); font-size: 12.5px; }
   .session .meta { color: var(--muted); font-size: 12px; font-family: var(--mono); }
   .session .traffic { margin-left: auto; display: flex; gap: 14px; font-family: var(--mono); font-size: 12.5px; }
+  .session .muted-traffic { color: var(--muted); font-size: 12px; }
+  .session > summary > .dot { flex-shrink: 0; }
+  .tag.bad-tag { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, var(--border)); }
   .up { color: var(--up); }
   .down { color: var(--down); }
 
@@ -200,23 +204,23 @@
   <div class="banner hidden" id="banner"></div>
 
   <div class="stats">
-    <div class="stat"><div class="label">Connected clients</div><div class="value" id="sSessions">0</div></div>
-    <div class="stat"><div class="label">Tracked flows</div><div class="value" id="sFlows">0</div></div>
-    <div class="stat"><div class="label">Upload</div><div class="value up" id="sUp">0 B</div></div>
-    <div class="stat"><div class="label">Download</div><div class="value down" id="sDown">0 B</div></div>
-    <div class="stat"><div class="label">Names resolved</div><div class="value" id="sNames">0</div></div>
-    <div class="stat"><div class="label">Packets inspected</div><div class="value" id="sPackets">0</div></div>
+    <div class="stat"><div class="label">Connected now</div><div class="value" id="sSessions">0</div><div class="sub" id="sUsers">of — known users</div></div>
+    <div class="stat"><div class="label">Upload rate</div><div class="value up" id="sUpRate">0 B/s</div><div class="sub" id="sUp">0 B this session</div></div>
+    <div class="stat"><div class="label">Download rate</div><div class="value down" id="sDownRate">0 B/s</div><div class="sub" id="sDown">0 B this session</div></div>
+    <div class="stat"><div class="label">Tracked flows</div><div class="value" id="sFlows">0</div><div class="sub">live kernel entries</div></div>
+    <div class="stat"><div class="label">Names resolved</div><div class="value" id="sNames">0</div><div class="sub">cached</div></div>
+    <div class="stat"><div class="label">Packets inspected</div><div class="value" id="sPackets">0</div><div class="sub">since probe attach</div></div>
   </div>
 
   <div class="layout">
     <section>
       <div class="tabs">
-        <button class="tab active" data-view="live">Live</button>
+        <button class="tab active" data-view="users">Users</button>
         <button class="tab" data-view="history" id="historyTab">History</button>
       </div>
 
-      <div id="viewLive">
-        <div id="sessions"><div class="empty">No clients connected.</div></div>
+      <div id="viewUsers">
+        <div id="users"><div class="empty">Loading users…</div></div>
       </div>
 
       <div id="viewHistory" class="hidden">
@@ -281,12 +285,14 @@ function esc(s) {
   ));
 }
 
+let lastSnapshot = null;
+
 function renderSnapshot(snap) {
+  lastSnapshot = snap;
   $("ifaceInfo").textContent = `${snap.interface} · ${snap.vpn_subnet}`;
   $("updated").textContent = new Date(snap.updated_at).toLocaleTimeString();
 
-  const mgmtDot = $("mgmtDot");
-  mgmtDot.className = "dot " + (snap.mgmt_healthy ? "ok" : "bad");
+  $("mgmtDot").className = "dot " + (snap.mgmt_healthy ? "ok" : "bad");
 
   const banner = $("banner");
   if (!snap.mgmt_healthy && snap.mgmt_error) {
@@ -297,71 +303,143 @@ function renderSnapshot(snap) {
   }
 
   const sessions = snap.sessions || [];
-  let up = 0, down = 0;
-  for (const s of sessions) { up += s.flow_tx_bytes || 0; down += s.flow_rx_bytes || 0; }
+  let up = 0, down = 0, upRate = 0, downRate = 0;
+  for (const s of sessions) {
+    up   += s.flow_tx_bytes || 0;
+    down += s.flow_rx_bytes || 0;
+    upRate   += s.tx_bytes_per_sec || 0;
+    downRate += s.rx_bytes_per_sec || 0;
+  }
 
   $("sSessions").textContent = sessions.length;
-  $("sFlows").textContent = num(snap.flow_count);
-  $("sUp").textContent = bytes(up);
-  $("sDown").textContent = bytes(down);
-  $("sNames").textContent = num(snap.names_cached);
+  $("sUpRate").textContent   = bytes(upRate) + "/s";
+  $("sDownRate").textContent = bytes(downRate) + "/s";
+  // Cumulative since each session began - not since the dashboard opened.
+  $("sUp").textContent   = bytes(up) + " this session";
+  $("sDown").textContent = bytes(down) + " this session";
+  $("sFlows").textContent   = num(snap.flow_count);
+  $("sNames").textContent   = num(snap.names_cached);
   $("sPackets").textContent = num(snap.probe?.packets);
 
-  const host = $("sessions");
-  if (!sessions.length) {
-    host.innerHTML = '<div class="empty">No clients connected.</div>';
+  // Live figures for users already on screen, without refetching the list.
+  patchOnlineUsers(sessions);
+}
+
+// ---------------------------------------------------------------- users --
+
+const openUsers = new Set();   // expanded rows, kept across refreshes
+let usersCache = [];
+
+function destinationRows(dests) {
+  if (!dests || !dests.length) {
+    return '<tr><td colspan="7" class="empty">No traffic observed yet.</td></tr>';
+  }
+  return dests.map((d) => {
+    const name = d.hostname || "";
+    const src = d.name_source ? `<span class="tag ${esc(d.name_source)}">${esc(d.name_source)}</span>` : "";
+    const svc = d.service ? `<span class="tag">${esc(d.service)}</span>` : "";
+    return `<tr>
+      <td class="host" title="${esc(name || d.remote_ip)}">
+        ${name ? esc(name) : '<span class="ip">' + esc(d.remote_ip) + "</span>"} ${src}
+      </td>
+      <td class="ip">${name ? esc(d.remote_ip) : ""}</td>
+      <td class="num">${esc(d.proto)}/${d.port} ${svc}</td>
+      <td class="num up">${bytes(d.tx_bytes)}</td>
+      <td class="num down">${bytes(d.rx_bytes)}</td>
+      <td class="num">${d.connections || ""}</td>
+      <td class="num">${ago(d.last_seen)}</td>
+    </tr>`;
+  }).join("");
+}
+
+function renderUsers(users) {
+  usersCache = users;
+  const host = $("users");
+
+  const online = users.filter((u) => u.online).length;
+  $("sUsers").textContent = `of ${users.length} known user${users.length === 1 ? "" : "s"}`;
+
+  if (!users.length) {
+    host.innerHTML = '<div class="empty">No users known yet. They appear here once they connect, '
+      + 'or immediately if an easy-rsa index is readable.</div>';
     return;
   }
 
-  host.innerHTML = sessions.map((s) => {
-    const key = s.common_name + "|" + s.virtual_ip;
-    const dests = s.destinations || [];
-    const rows = dests.length ? dests.map((d) => {
-      const name = d.hostname || "";
-      const src = d.name_source ? `<span class="tag ${esc(d.name_source)}">${esc(d.name_source)}</span>` : "";
-      const svc = d.service ? `<span class="tag">${esc(d.service)}</span>` : "";
-      return `<tr>
-        <td class="host" title="${esc(name || d.remote_ip)}">
-          ${name ? esc(name) : '<span class="ip">' + esc(d.remote_ip) + "</span>"} ${src}
-        </td>
-        <td class="ip">${name ? esc(d.remote_ip) : ""}</td>
-        <td class="num">${esc(d.proto)}/${d.port} ${svc}</td>
-        <td class="num up">${bytes(d.tx_bytes)}</td>
-        <td class="num down">${bytes(d.rx_bytes)}</td>
-        <td class="num">${d.connections || ""}</td>
-        <td class="num">${ago(d.last_seen)}</td>
-      </tr>`;
-    }).join("") : '<tr><td colspan="7" class="empty">No traffic observed yet.</td></tr>';
+  host.innerHTML = users.map((u) => {
+    const key = u.common_name;
+    const s = u.session;
+    const cert = u.cert_status && u.cert_status !== "valid"
+      ? `<span class="tag bad-tag">${esc(u.cert_status)}</span>` : "";
 
-    return `<details class="session" data-key="${esc(key)}" ${open.has(key) ? "open" : ""}>
+    // Online users show live throughput; everyone else shows when they last
+    // connected, so a disconnected user does not simply vanish.
+    const rightSide = s
+      ? `<span class="traffic">
+           <span class="up">↑ ${bytes(s.tx_bytes_per_sec)}/s</span>
+           <span class="down">↓ ${bytes(s.rx_bytes_per_sec)}/s</span>
+         </span>`
+      : `<span class="traffic muted-traffic">${u.last_seen ? "last seen " + ago(u.last_seen) : "never connected"}</span>`;
+
+    const meta = s
+      ? `from ${esc(s.real_address)} · ${esc(s.duration)} · ↑${bytes(s.flow_tx_bytes)} ↓${bytes(s.flow_rx_bytes)} this session`
+      : `${u.session_count || 0} session${u.session_count === 1 ? "" : "s"}`
+        + (u.total_tx_bytes || u.total_rx_bytes
+            ? ` · ↑${bytes(u.total_tx_bytes)} ↓${bytes(u.total_rx_bytes)} total`
+            : "")
+        + (u.last_address ? ` · last from ${esc(u.last_address)}` : "");
+
+    const body = s
+      ? `<div class="scroll"><table>
+           <thead><tr>
+             <th>Destination</th><th>Address</th><th style="text-align:right">Port</th>
+             <th style="text-align:right">Up</th><th style="text-align:right">Down</th>
+             <th style="text-align:right">Conns</th><th style="text-align:right">Last</th>
+           </tr></thead>
+           <tbody>${destinationRows(s.destinations)}</tbody>
+         </table></div>`
+      : `<div class="empty">Not connected. History for this user is in the History tab.</div>`;
+
+    return `<details class="session" data-user="${esc(key)}" ${openUsers.has(key) ? "open" : ""}>
       <summary>
-        <span class="cn">${esc(s.common_name || "(unnamed)")}</span>
-        <span class="vip">${esc(s.virtual_ip)}</span>
-        <span class="meta">from ${esc(s.real_address)} · ${esc(s.duration)} · ${dests.length} dest</span>
-        <span class="traffic">
-          <span class="up">↑ ${bytes(s.flow_tx_bytes)}</span>
-          <span class="down">↓ ${bytes(s.flow_rx_bytes)}</span>
-        </span>
+        <span class="dot ${s ? "ok" : ""}"></span>
+        <span class="cn">${esc(u.common_name)}</span>
+        ${s ? `<span class="vip">${esc(s.virtual_ip)}</span>` : ""}
+        ${cert}
+        <span class="meta">${meta}</span>
+        ${rightSide}
       </summary>
-      <div class="scroll">
-        <table>
-          <thead><tr>
-            <th>Destination</th><th>Address</th><th style="text-align:right">Port</th>
-            <th style="text-align:right">Up</th><th style="text-align:right">Down</th>
-            <th style="text-align:right">Conns</th><th style="text-align:right">Last</th>
-          </tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
+      ${body}
     </details>`;
   }).join("");
 
   host.querySelectorAll("details.session").forEach((el) => {
     el.addEventListener("toggle", () => {
-      const k = el.dataset.key;
-      el.open ? open.add(k) : open.delete(k);
+      const k = el.dataset.user;
+      el.open ? openUsers.add(k) : openUsers.delete(k);
     });
   });
+}
+
+// patchOnlineUsers refreshes throughput in place between full list fetches,
+// which happen far less often than snapshots arrive.
+function patchOnlineUsers(sessions) {
+  if (!usersCache.length) return;
+  const byName = new Map(sessions.map((s) => [s.common_name, s]));
+  let changed = false;
+  for (const u of usersCache) {
+    const s = byName.get(u.common_name) || null;
+    if (!!s !== u.online) { changed = true; }   // someone joined or left
+    u.online = !!s;
+    u.session = s;
+  }
+  if (changed) refreshUsers(); else renderUsers(usersCache);
+}
+
+async function refreshUsers() {
+  try {
+    const res = await fetch("/api/users");
+    if (res.ok) renderUsers(await res.json());
+  } catch (e) { /* the websocket banner already reports connectivity */ }
 }
 
 function describe(ev) {
@@ -404,7 +482,8 @@ document.querySelectorAll(".tab").forEach((tab) => {
     document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
     tab.classList.add("active");
     const history = tab.dataset.view === "history";
-    $("viewLive").classList.toggle("hidden", history);
+    $("viewUsers").classList.toggle("hidden", history);
+    if (!history) refreshUsers();
     $("viewHistory").classList.toggle("hidden", !history);
   });
 });
@@ -508,6 +587,12 @@ function connect() {
 }
 
 connect();
+refreshUsers();
+// The list itself changes slowly (a new certificate, a first connection), so
+// it is refetched on a long interval; live throughput comes from snapshots.
+setInterval(() => {
+  if (!$("viewUsers").classList.contains("hidden")) refreshUsers();
+}, 15000);
 </script>
 </body>
 </html>

@@ -91,19 +91,29 @@ type Destination struct {
 
 // SessionView is a connected client plus everything observed about it.
 type SessionView struct {
-	CommonName     string        `json:"common_name"`
-	Username       string        `json:"username,omitempty"`
-	RealAddress    string        `json:"real_address"`
-	VirtualIP      netip.Addr    `json:"virtual_ip"`
-	ClientID       uint32        `json:"client_id"`
-	Cipher         string        `json:"cipher,omitempty"`
-	ConnectedSince time.Time     `json:"connected_since"`
-	Duration       string        `json:"duration"`
-	TunnelRx       uint64        `json:"tunnel_bytes_received"`
-	TunnelTx       uint64        `json:"tunnel_bytes_sent"`
-	FlowTx         uint64        `json:"flow_tx_bytes"`
-	FlowRx         uint64        `json:"flow_rx_bytes"`
-	Destinations   []Destination `json:"destinations"`
+	CommonName     string     `json:"common_name"`
+	Username       string     `json:"username,omitempty"`
+	RealAddress    string     `json:"real_address"`
+	VirtualIP      netip.Addr `json:"virtual_ip"`
+	ClientID       uint32     `json:"client_id"`
+	Cipher         string     `json:"cipher,omitempty"`
+	ConnectedSince time.Time  `json:"connected_since"`
+	Duration       string     `json:"duration"`
+	// Encrypted totals OpenVPN itself counts for the tunnel.
+	TunnelRx uint64 `json:"tunnel_bytes_received"`
+	TunnelTx uint64 `json:"tunnel_bytes_sent"`
+
+	// Plaintext totals the probe has accumulated inside the tunnel since this
+	// session began. Monotonic: they do not fall when a flow expires.
+	FlowTx uint64 `json:"flow_tx_bytes"`
+	FlowRx uint64 `json:"flow_rx_bytes"`
+
+	// Current throughput in bytes per second, measured across the last two
+	// scrapes. Zero until a second sample exists.
+	TxRate float64 `json:"tx_bytes_per_sec"`
+	RxRate float64 `json:"rx_bytes_per_sec"`
+
+	Destinations []Destination `json:"destinations"`
 }
 
 // LiveEvent is something worth showing the moment it happens.
@@ -152,6 +162,11 @@ type Collector struct {
 	// store can be fed increments. Touched only by scrapeLoop.
 	prevFlows map[flowKey]flowCounters
 
+	// rates holds the previous scrape's totals per session, so a per-second
+	// figure can be derived. The dashboard should not have to infer rate from
+	// successive snapshots: a browser that reconnects would show a spike.
+	rates map[netip.Addr]rateSample
+
 	// totals accumulates those increments per live session. The kernel map is
 	// a live view - entries expire and can be evicted - so summing it would
 	// produce a figure that goes down, which is not a counter. Prometheus
@@ -160,6 +175,12 @@ type Collector struct {
 
 	subMu sync.Mutex
 	subs  map[chan LiveEvent]struct{}
+}
+
+// rateSample is one session's byte totals at a point in time.
+type rateSample struct {
+	tx, rx uint64
+	at     time.Time
 }
 
 // flowKey identifies a conversation across scrapes.
@@ -288,6 +309,7 @@ func New(cfg Config, log *slog.Logger) (*Collector, error) {
 		dbSessions: make(map[netip.Addr]int64),
 		prevFlows:  make(map[flowKey]flowCounters),
 		totals:     make(map[netip.Addr]*sessionTotals),
+		rates:      make(map[netip.Addr]rateSample),
 		subs:       make(map[chan LiveEvent]struct{}),
 		snapshot: Snapshot{
 			Interface: cfg.Interface,
@@ -532,6 +554,7 @@ func (c *Collector) closeHistorySession(ip netip.Addr, s mgmt.Session) {
 	// The accumulated totals belong to the session that just ended; a client
 	// reconnecting onto the same address starts from zero.
 	delete(c.totals, ip)
+	delete(c.rates, ip)
 	c.mu.Unlock()
 	if !ok {
 		return
@@ -734,6 +757,7 @@ func (c *Collector) rebuild() {
 		})
 	}
 
+	now := time.Now()
 	views := make([]SessionView, 0, len(sessions))
 	for ip, s := range sessions {
 		dests := byClient[ip]
@@ -748,6 +772,8 @@ func (c *Collector) rebuild() {
 			rx += d.RxBytes
 		}
 
+		txRate, rxRate := c.rateFor(ip, tx, rx, now)
+
 		views = append(views, SessionView{
 			CommonName:     s.CommonName,
 			Username:       s.Username,
@@ -761,6 +787,8 @@ func (c *Collector) rebuild() {
 			TunnelTx:       s.BytesSent,
 			FlowTx:         tx,
 			FlowRx:         rx,
+			TxRate:         txRate,
+			RxRate:         rxRate,
 			Destinations:   dests,
 		})
 	}
@@ -867,6 +895,26 @@ func (c *Collector) applyFlowDeltas(flows []ebpfx.Flow) {
 	if c.cfg.Store != nil {
 		c.cfg.Store.RecordDestinations(batch)
 	}
+}
+
+// rateFor derives bytes per second from the change since the previous scrape.
+//
+// Called only from rebuild, under no lock of its own: rates is touched
+// nowhere else. Counters here are monotonic within a session, so a decrease
+// means the session was replaced and the sample is discarded rather than
+// producing a negative rate.
+func (c *Collector) rateFor(ip netip.Addr, tx, rx uint64, now time.Time) (float64, float64) {
+	prev, ok := c.rates[ip]
+	c.rates[ip] = rateSample{tx: tx, rx: rx, at: now}
+
+	if !ok {
+		return 0, 0
+	}
+	elapsed := now.Sub(prev.at).Seconds()
+	if elapsed <= 0 || tx < prev.tx || rx < prev.rx {
+		return 0, 0
+	}
+	return float64(tx-prev.tx) / elapsed, float64(rx-prev.rx) / elapsed
 }
 
 // ------------------------------------------------------------- accessors ---

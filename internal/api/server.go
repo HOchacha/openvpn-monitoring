@@ -17,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/ubuntu/openvpn-monitoring/internal/collector"
+	"github.com/ubuntu/openvpn-monitoring/internal/pki"
 	"github.com/ubuntu/openvpn-monitoring/internal/store"
 )
 
@@ -29,12 +30,37 @@ type Server struct {
 	log   *slog.Logger
 	reg   *prometheus.Registry
 	store *store.Store
+
+	// pkiPath is the easy-rsa index to read the full user list from. Empty
+	// means "look in the usual places on each request", which keeps a PKI that
+	// appears after startup from needing a restart.
+	pkiPath  string
+	serverCN string
 }
 
 // New wires up the handlers. reg may be nil to skip the metrics endpoint, and
 // st may be nil when history is disabled.
 func New(col *collector.Collector, reg *prometheus.Registry, st *store.Store, log *slog.Logger) *Server {
-	return &Server{col: col, log: log, reg: reg, store: st}
+	return &Server{col: col, log: log, reg: reg, store: st, serverCN: "server"}
+}
+
+// WithPKI points the user list at a specific easy-rsa index, and names the
+// certificate belonging to the server itself so it is not listed as a user.
+func (s *Server) WithPKI(indexPath, serverCN string) *Server {
+	s.pkiPath = indexPath
+	if serverCN != "" {
+		s.serverCN = serverCN
+	}
+	return s
+}
+
+// pkiIndex resolves the index path, falling back to the conventional
+// locations.
+func (s *Server) pkiIndex() string {
+	if s.pkiPath != "" {
+		return s.pkiPath
+	}
+	return pki.Find()
 }
 
 // Handler builds the mux.
@@ -44,6 +70,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/snapshot", s.handleSnapshot)
 	mux.HandleFunc("GET /api/sessions", s.handleSessions)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
+	mux.HandleFunc("GET /api/users", s.handleUsers)
 	mux.HandleFunc("GET /api/stream", s.handleStream)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 
