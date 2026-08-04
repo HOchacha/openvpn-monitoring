@@ -231,6 +231,27 @@
     background: var(--accent); border: 1px solid var(--accent); color: #fff;
   }
   .login-err { color: var(--bad); font-size: 12px; min-height: 16px; }
+  .live-controls { display: flex; gap: 4px; align-items: center; }
+  .live-controls button, .live-controls select {
+    font: inherit; font-size: 12px; padding: 3px 9px; cursor: pointer;
+    background: var(--panel-2); color: var(--muted);
+    border: 1px solid var(--border); border-radius: 7px;
+  }
+  .live-controls button:hover, .live-controls select:hover { color: var(--text); }
+  .live-controls button.paused {
+    background: color-mix(in srgb, var(--warn) 18%, var(--panel-2));
+    border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+    color: var(--warn);
+  }
+  #refreshBtn.spin { animation: spin 0.5s linear; }
+  @keyframes spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+  .paused-note {
+    background: color-mix(in srgb, var(--warn) 12%, var(--panel));
+    border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--border));
+    color: var(--warn); padding: 8px 14px; border-radius: 8px; margin-bottom: 16px;
+    font-size: 13px;
+  }
+
   #logoutBtn {
     font: inherit; font-size: 12px; padding: 3px 10px; cursor: pointer;
     background: var(--panel-2); color: var(--muted);
@@ -260,12 +281,23 @@
   <span class="spacer"></span>
   <span class="pill"><span class="dot" id="wsDot"></span><span id="wsText">connecting</span></span>
   <span class="pill"><span class="dot" id="mgmtDot"></span>management</span>
+  <div class="live-controls">
+    <button id="pauseBtn" title="Pause live updates">⏸</button>
+    <select id="rateSel" title="How often the view redraws">
+      <option value="2000">2s</option>
+      <option value="5000" selected>5s</option>
+      <option value="10000">10s</option>
+      <option value="30000">30s</option>
+    </select>
+    <button id="refreshBtn" title="Refresh now">↻</button>
+  </div>
   <span class="pill" id="updated">—</span>
   <button id="logoutBtn" class="hidden">Sign out</button>
 </header>
 
 <main>
   <div class="banner hidden" id="banner"></div>
+  <div class="paused-note hidden" id="pausedNote"></div>
 
   <div class="stats">
     <div class="stat"><div class="label">Connected now</div><div class="value" id="sSessions">0</div><div class="sub" id="sUsers">of — known users</div></div>
@@ -349,12 +381,84 @@ function esc(s) {
   ));
 }
 
+// ------------------------------------------------------- live refresh ----
+//
+// Snapshots keep arriving over the websocket; what these control is how often
+// the page redraws. Redrawing on every snapshot loses text selections and
+// makes a table impossible to read while it is being scrolled.
+
+let paused = false;
+let redrawEvery = 5000;
+let lastDrawn = 0;
+let pendingSnapshot = null;   // newest snapshot not yet drawn
+let pendingEvents = [];       // events that arrived while paused
+
+const startedAt = Date.now();
+
+function applyPending(force) {
+  if (paused) return;
+  const now = Date.now();
+  // The server replays a snapshot and its recent events the moment the
+  // websocket opens. Throttling those would leave the page blank for the
+  // first interval, so the opening burst is drawn immediately.
+  const warmingUp = now - startedAt < 3000;
+  if (!force && !warmingUp && now - lastDrawn < redrawEvery) return;
+
+  if (pendingSnapshot) {
+    drawSnapshot(pendingSnapshot);
+    pendingSnapshot = null;
+  }
+  // Events are buffered rather than dropped, so pausing does not create a
+  // hole in the activity feed.
+  if (pendingEvents.length) {
+    for (const ev of pendingEvents) drawEvent(ev);
+    pendingEvents = [];
+  }
+  lastDrawn = now;
+}
+
+function setPaused(v) {
+  paused = v;
+  const btn = $("pauseBtn");
+  btn.textContent = v ? "▶" : "⏸";
+  btn.classList.toggle("paused", v);
+  btn.title = v ? "Resume live updates" : "Pause live updates";
+
+  const note = $("pausedNote");
+  note.classList.toggle("hidden", !v);
+  if (v) note.textContent = "Live updates paused. Events are still being collected and will appear when you resume.";
+  if (!v) applyPending(true);
+}
+
+$("pauseBtn").addEventListener("click", () => setPaused(!paused));
+$("rateSel").addEventListener("change", (e) => {
+  redrawEvery = Number(e.target.value);
+  applyPending(true);
+});
+$("refreshBtn").addEventListener("click", () => {
+  const b = $("refreshBtn");
+  b.classList.remove("spin"); void b.offsetWidth; b.classList.add("spin");
+  if (paused) setPaused(false);
+  applyPending(true);
+  refreshUsers(true);
+});
+
+// Redraw on a timer too: a paused-then-resumed page, or one whose interval is
+// longer than the snapshot cadence, still needs to catch up eventually.
+setInterval(() => applyPending(false), 1000);
+
 let lastSnapshot = null;
 
 function renderSnapshot(snap) {
+  pendingSnapshot = snap;
+  applyPending(false);
+}
+
+function drawSnapshot(snap) {
   lastSnapshot = snap;
   $("ifaceInfo").textContent = `${snap.interface} · ${snap.vpn_subnet}`;
   $("updated").textContent = new Date(snap.updated_at).toLocaleTimeString();
+  $("updated").title = `Redrawing every ${redrawEvery / 1000}s`;
 
   $("mgmtDot").className = "dot " + (snap.mgmt_healthy ? "ok" : "bad");
 
@@ -557,8 +661,9 @@ function patchOnlineUsers(sessions) {
   if (changed) refreshUsers(); else renderUsers(usersCache);
 }
 
-async function refreshUsers() {
+async function refreshUsers(force) {
   if (editingNotes.size) return;
+  if (paused && !force) return;
   try {
     const res = await fetch("/api/users");
     if (res.status === 401) { onUnauthorised(); return; }
@@ -584,6 +689,13 @@ function describe(ev) {
 }
 
 function pushEvent(ev) {
+  pendingEvents.push(ev);
+  // Bound the buffer so a long pause cannot grow it without limit.
+  if (pendingEvents.length > MAX_FEED) pendingEvents = pendingEvents.slice(-MAX_FEED);
+  applyPending(false);
+}
+
+function drawEvent(ev) {
   const feed = $("feed");
   if (feedCount === 0) feed.innerHTML = "";
 
