@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -35,6 +37,10 @@ type User struct {
 	LastAddress  string     `json:"last_address,omitempty"`
 	TotalTx      uint64     `json:"total_tx_bytes"`
 	TotalRx      uint64     `json:"total_rx_bytes"`
+
+	// An operator's note about this user.
+	Note        string     `json:"note,omitempty"`
+	NoteUpdated *time.Time `json:"note_updated_at,omitempty"`
 }
 
 // handleUsers returns every known user, online or not.
@@ -99,6 +105,26 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Operator notes attach to users the other sources already know about.
+	// A note is not evidence that someone exists - a typo in the common name
+	// would otherwise conjure a phantom row and make the list untrustworthy.
+	// The note itself is kept, so it appears if that user later shows up.
+	if s.store != nil {
+		if notes, err := s.store.Notes(r.Context()); err != nil {
+			s.log.Warn("could not read user notes", "error", err)
+		} else {
+			for cn, n := range notes {
+				u, known := users[cn]
+				if !known {
+					continue
+				}
+				u.Note = n.Note
+				t := n.UpdatedAt
+				u.NoteUpdated = &t
+			}
+		}
+	}
+
 	out := make([]User, 0, len(users))
 	for _, u := range users {
 		out = append(out, *u)
@@ -123,4 +149,39 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 	})
 
 	writeJSON(w, out)
+}
+
+// handleUserNote stores an operator's note about a user.
+//
+// This is the only endpoint that writes. There is no authentication in front
+// of it, so it is deliberately limited to free text against a name: it cannot
+// disconnect anyone, change what is monitored, or reach the VPN.
+func (s *Server) handleUserNote(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		http.Error(w, "notes need history enabled (-store)", http.StatusNotImplemented)
+		return
+	}
+
+	cn := r.PathValue("common_name")
+	if cn == "" {
+		http.Error(w, "missing common name", http.StatusBadRequest)
+		return
+	}
+
+	var body struct {
+		Note string `json:"note"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&body); err != nil {
+		http.Error(w, "expected {\"note\": \"...\"}", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.store.SetNote(r.Context(), cn, body.Note); err != nil {
+		s.log.Warn("could not save note", "common_name", cn, "error", err)
+		http.Error(w, "could not save note", http.StatusInternalServerError)
+		return
+	}
+
+	s.log.Info("user note updated", "common_name", cn, "cleared", strings.TrimSpace(body.Note) == "")
+	w.WriteHeader(http.StatusNoContent)
 }

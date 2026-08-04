@@ -180,6 +180,27 @@
   }
   .filters button:hover { filter: brightness(1.08); }
 
+  .note { border-top: 1px solid var(--border); padding: 12px 16px; background: var(--panel-2); }
+  .note label {
+    display: block; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.04em; color: var(--muted); margin-bottom: 6px;
+  }
+  .note textarea {
+    width: 100%; min-height: 60px; resize: vertical; font: inherit; font-size: 13px;
+    padding: 8px 10px; border-radius: 7px; color: var(--text);
+    background: var(--panel); border: 1px solid var(--border);
+  }
+  .note .row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+  .note button {
+    font: inherit; font-size: 12px; font-weight: 600; padding: 5px 14px;
+    cursor: pointer; border-radius: 7px;
+    background: var(--accent); border: 1px solid var(--accent); color: #fff;
+  }
+  .note button:disabled { opacity: 0.5; cursor: default; }
+  .note .status { font-size: 12px; color: var(--muted); }
+  .note .status.err { color: var(--bad); }
+  .has-note { color: var(--warn); }
+
   .empty { color: var(--muted); padding: 26px 16px; text-align: center; font-size: 13px; }
   .banner {
     background: color-mix(in srgb, var(--bad) 12%, var(--panel));
@@ -399,16 +420,29 @@ function renderUsers(users) {
          </table></div>`
       : `<div class="empty">Not connected. History for this user is in the History tab.</div>`;
 
+    const noteBox = `<div class="note">
+      <label for="note-${esc(key)}">Operator note${u.note_updated_at ? " · updated " + ago(u.note_updated_at) : ""}</label>
+      <textarea id="note-${esc(key)}" data-note-for="${esc(key)}"
+                placeholder="Why this account exists, who to contact, anything worth remembering."
+                maxlength="2000">${esc(u.note || "")}</textarea>
+      <div class="row">
+        <button data-save-note="${esc(key)}">Save</button>
+        <span class="status" data-note-status="${esc(key)}"></span>
+      </div>
+    </div>`;
+
     return `<details class="session" data-user="${esc(key)}" ${openUsers.has(key) ? "open" : ""}>
       <summary>
         <span class="dot ${s ? "ok" : ""}"></span>
         <span class="cn">${esc(u.common_name)}</span>
         ${s ? `<span class="vip">${esc(s.virtual_ip)}</span>` : ""}
         ${cert}
+        ${u.note ? '<span class="tag has-note" title="' + esc(u.note) + '">note</span>' : ""}
         <span class="meta">${meta}</span>
         ${rightSide}
       </summary>
       ${body}
+      ${noteBox}
     </details>`;
   }).join("");
 
@@ -418,6 +452,50 @@ function renderUsers(users) {
       el.open ? openUsers.add(k) : openUsers.delete(k);
     });
   });
+
+  host.querySelectorAll("[data-save-note]").forEach((btn) => {
+    btn.addEventListener("click", () => saveNote(btn.dataset.saveNote));
+  });
+  // Typing marks the row as being edited so a background refresh does not
+  // overwrite half-written text.
+  host.querySelectorAll("[data-note-for]").forEach((ta) => {
+    ta.addEventListener("input", () => editingNotes.add(ta.dataset.noteFor));
+  });
+}
+
+// Rows whose note is being edited right now; refreshUsers skips re-rendering
+// while any is open, so a periodic refresh cannot discard what someone typed.
+const editingNotes = new Set();
+
+async function saveNote(cn) {
+  const ta = document.querySelector(`[data-note-for="${CSS.escape(cn)}"]`);
+  const status = document.querySelector(`[data-note-status="${CSS.escape(cn)}"]`);
+  const btn = document.querySelector(`[data-save-note="${CSS.escape(cn)}"]`);
+  if (!ta) return;
+
+  btn.disabled = true;
+  status.className = "status";
+  status.textContent = "saving…";
+
+  try {
+    const res = await fetch(`/api/users/${encodeURIComponent(cn)}/note`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note: ta.value }),
+    });
+    if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
+
+    editingNotes.delete(cn);
+    status.textContent = "saved";
+    const u = usersCache.find((x) => x.common_name === cn);
+    if (u) { u.note = ta.value.trim(); u.note_updated_at = new Date().toISOString(); }
+    setTimeout(() => { status.textContent = ""; }, 2500);
+  } catch (e) {
+    status.className = "status err";
+    status.textContent = e.message;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // patchOnlineUsers refreshes throughput in place between full list fetches,
@@ -432,10 +510,12 @@ function patchOnlineUsers(sessions) {
     u.online = !!s;
     u.session = s;
   }
+  if (editingNotes.size) return;      // never clobber a note being written
   if (changed) refreshUsers(); else renderUsers(usersCache);
 }
 
 async function refreshUsers() {
+  if (editingNotes.size) return;
   try {
     const res = await fetch("/api/users");
     if (res.ok) renderUsers(await res.json());

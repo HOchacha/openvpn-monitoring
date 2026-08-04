@@ -59,6 +59,14 @@ var sqliteSchema = []string{
 	`CREATE INDEX IF NOT EXISTS idx_events_ts ON events (ts)`,
 	`CREATE INDEX IF NOT EXISTS idx_events_cn_ts ON events (common_name, ts)`,
 	`CREATE INDEX IF NOT EXISTS idx_events_host ON events (hostname)`,
+
+	// Operator notes about a user. Keyed by common name rather than by
+	// session, because the note is about the person, not one connection.
+	`CREATE TABLE IF NOT EXISTS user_notes (
+		common_name TEXT    NOT NULL PRIMARY KEY,
+		note        TEXT    NOT NULL DEFAULT '',
+		updated_at  INTEGER NOT NULL
+	)`,
 }
 
 var mysqlSchema = []string{
@@ -114,6 +122,13 @@ var mysqlSchema = []string{
 		KEY idx_events_ts (ts),
 		KEY idx_events_cn_ts (common_name, ts),
 		KEY idx_events_host (hostname)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+	`CREATE TABLE IF NOT EXISTS user_notes (
+		common_name VARCHAR(191) NOT NULL,
+		note        TEXT         NOT NULL,
+		updated_at  BIGINT       NOT NULL,
+		PRIMARY KEY (common_name)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 }
 

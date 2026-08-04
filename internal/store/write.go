@@ -316,3 +316,67 @@ func isForeignKeyViolation(err error) bool {
 	return strings.Contains(msg, "FOREIGN KEY constraint failed") || // sqlite
 		strings.Contains(msg, "a foreign key constraint fails") // mysql
 }
+
+// MaxNoteLength bounds what an operator can store against a user. Notes are
+// free text from an unauthenticated endpoint, so the size is capped rather
+// than trusted.
+const MaxNoteLength = 2000
+
+// SetNote records (or clears, when note is empty) an operator's note about a
+// user. Writing is synchronous: unlike telemetry, losing this silently would
+// be surprising.
+func (s *Store) SetNote(ctx context.Context, commonName, note string) error {
+	if commonName == "" {
+		return errors.New("note needs a common name")
+	}
+	if len(note) > MaxNoteLength {
+		note = note[:MaxNoteLength]
+	}
+
+	if strings.TrimSpace(note) == "" {
+		_, err := s.db.ExecContext(ctx,
+			`DELETE FROM user_notes WHERE common_name = ?`, commonName)
+		return err
+	}
+
+	var q string
+	if s.dialect == MySQL {
+		q = `INSERT INTO user_notes (common_name, note, updated_at) VALUES (?, ?, ?)
+		     ON DUPLICATE KEY UPDATE note = VALUES(note), updated_at = VALUES(updated_at)`
+	} else {
+		q = `INSERT INTO user_notes (common_name, note, updated_at) VALUES (?, ?, ?)
+		     ON CONFLICT (common_name) DO UPDATE SET note = excluded.note, updated_at = excluded.updated_at`
+	}
+	if _, err := s.db.ExecContext(ctx, q, commonName, note, time.Now().Unix()); err != nil {
+		atomic.AddUint64(&s.counters.writeErrors, 1)
+		return fmt.Errorf("saving note: %w", err)
+	}
+	return nil
+}
+
+// Note is one operator note.
+type Note struct {
+	Note      string    `json:"note"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// Notes returns every stored note, keyed by common name.
+func (s *Store) Notes(ctx context.Context) (map[string]Note, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT common_name, note, updated_at FROM user_notes`)
+	if err != nil {
+		return nil, fmt.Errorf("reading notes: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]Note{}
+	for rows.Next() {
+		var cn, note string
+		var ts int64
+		if err := rows.Scan(&cn, &note, &ts); err != nil {
+			return nil, err
+		}
+		out[cn] = Note{Note: note, UpdatedAt: time.Unix(ts, 0)}
+	}
+	return out, rows.Err()
+}

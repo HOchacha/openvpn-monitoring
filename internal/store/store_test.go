@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -477,5 +478,56 @@ func TestRecordEventNeverBlocks(t *testing.T) {
 
 	if s.Stats().EventsDropped == 0 {
 		t.Log("no events dropped; the writer kept up with the flood")
+	}
+}
+
+func TestNotes(t *testing.T) {
+	s := newTestStore(t, 0)
+	ctx := context.Background()
+
+	if err := s.SetNote(ctx, "alice", "contractor, review in Q3"); err != nil {
+		t.Fatalf("SetNote: %v", err)
+	}
+
+	notes, err := s.Notes(ctx)
+	if err != nil {
+		t.Fatalf("Notes: %v", err)
+	}
+	if got := notes["alice"].Note; got != "contractor, review in Q3" {
+		t.Errorf("note is %q", got)
+	}
+	if notes["alice"].UpdatedAt.IsZero() {
+		t.Error("note has no timestamp")
+	}
+
+	// Writing again replaces rather than duplicating.
+	if err := s.SetNote(ctx, "alice", "revoked"); err != nil {
+		t.Fatal(err)
+	}
+	notes, _ = s.Notes(ctx)
+	if len(notes) != 1 || notes["alice"].Note != "revoked" {
+		t.Errorf("second write produced %+v", notes)
+	}
+
+	// Blank clears it, so there is no way to leave an empty row behind.
+	if err := s.SetNote(ctx, "alice", "   "); err != nil {
+		t.Fatal(err)
+	}
+	if notes, _ = s.Notes(ctx); len(notes) != 0 {
+		t.Errorf("a blank note left %d rows", len(notes))
+	}
+
+	// Oversized input is truncated, not rejected: it arrives from an
+	// unauthenticated endpoint.
+	if err := s.SetNote(ctx, "bob", strings.Repeat("x", MaxNoteLength+500)); err != nil {
+		t.Fatal(err)
+	}
+	notes, _ = s.Notes(ctx)
+	if got := len(notes["bob"].Note); got != MaxNoteLength {
+		t.Errorf("stored %d characters, want the %d cap", got, MaxNoteLength)
+	}
+
+	if err := s.SetNote(ctx, "", "no name"); err == nil {
+		t.Error("a note without a common name was accepted")
 	}
 }
