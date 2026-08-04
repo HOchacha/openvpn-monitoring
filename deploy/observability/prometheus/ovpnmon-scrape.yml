@@ -14,6 +14,13 @@ scrape_configs:
     # underlying counters are updated every two seconds by the collector.
     scrape_interval: 15s
     scrape_timeout: 10s
+    # ovpnmon requires a login once auth-password-hash is set. Prometheus has
+    # no browser session, so it presents the shared token instead. The file is
+    # written by install.sh from the token in ovpnmon.conf.
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/ovpnmon/token
+
     static_configs:
       - targets: ['127.0.0.1:9095']
         labels:

@@ -36,6 +36,15 @@ type Server struct {
 	// appears after startup from needing a restart.
 	pkiPath  string
 	serverCN string
+
+	// auth is nil when no credentials are configured, leaving everything open.
+	auth *Auth
+}
+
+// WithAuth puts the dashboard and API behind a login.
+func (s *Server) WithAuth(a *Auth) *Server {
+	s.auth = a
+	return s
 }
 
 // New wires up the handlers. reg may be nil to skip the metrics endpoint, and
@@ -67,33 +76,50 @@ func (s *Server) pkiIndex() string {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /api/snapshot", s.handleSnapshot)
-	mux.HandleFunc("GET /api/sessions", s.handleSessions)
-	mux.HandleFunc("GET /api/events", s.handleEvents)
-	mux.HandleFunc("GET /api/users", s.handleUsers)
-	mux.HandleFunc("PUT /api/users/{common_name}/note", s.handleUserNote)
-	mux.HandleFunc("GET /api/stream", s.handleStream)
+	// Open: the login exchange itself, whether a login is needed, and the
+	// health probe, which a load balancer has to reach without credentials.
+	mux.HandleFunc("POST /api/login", s.handleLogin)
+	mux.HandleFunc("POST /api/logout", s.handleLogout)
+	mux.HandleFunc("GET /api/auth", s.handleAuthStatus)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 
+	// Everything that exposes traffic data, or changes anything, needs a
+	// session.
+	protected := http.NewServeMux()
+	protected.HandleFunc("GET /api/snapshot", s.handleSnapshot)
+	protected.HandleFunc("GET /api/sessions", s.handleSessions)
+	protected.HandleFunc("GET /api/events", s.handleEvents)
+	protected.HandleFunc("GET /api/users", s.handleUsers)
+	protected.HandleFunc("PUT /api/users/{common_name}/note", s.handleUserNote)
+	protected.HandleFunc("GET /api/stream", s.handleStream)
+
 	if s.store != nil {
-		mux.HandleFunc("GET /api/history/sessions", s.handleHistorySessions)
-		mux.HandleFunc("GET /api/history/destinations", s.handleHistoryDestinations)
-		mux.HandleFunc("GET /api/history/events", s.handleHistoryEvents)
-		mux.HandleFunc("GET /api/history/hosts", s.handleHistoryHosts)
-		mux.HandleFunc("GET /api/history/stats", s.handleHistoryStats)
+		protected.HandleFunc("GET /api/history/sessions", s.handleHistorySessions)
+		protected.HandleFunc("GET /api/history/destinations", s.handleHistoryDestinations)
+		protected.HandleFunc("GET /api/history/events", s.handleHistoryEvents)
+		protected.HandleFunc("GET /api/history/hosts", s.handleHistoryHosts)
+		protected.HandleFunc("GET /api/history/stats", s.handleHistoryStats)
 	}
+	mux.Handle("/api/", s.guard(protected))
 
 	if s.reg != nil {
-		mux.Handle("GET /metrics", promhttp.HandlerFor(s.reg, promhttp.HandlerOpts{
-			ErrorHandling: promhttp.ContinueOnError,
-		}))
+		// Metrics carry the same data, so they are guarded too - but with a
+		// bearer token as well, since Prometheus has no browser session.
+		mux.Handle("GET /metrics", s.guardMetrics(promhttp.HandlerFor(s.reg,
+			promhttp.HandlerOpts{ErrorHandling: promhttp.ContinueOnError})))
 	}
 
 	sub, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		s.log.Error("embedded assets are missing", "error", err)
 	} else {
-		mux.Handle("GET /", http.FileServerFS(sub))
+		// The page itself is served unauthenticated; it renders a login form
+		// and gets nothing but 401s until a session exists.
+		//
+		// Registered without a method: "GET /" and "/api/" would otherwise be
+		// ambiguous for a GET under /api/, which ServeMux rejects outright.
+		// The longer "/api/" pattern wins for those requests either way.
+		mux.Handle("/", http.FileServerFS(sub))
 	}
 
 	return mux

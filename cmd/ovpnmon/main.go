@@ -106,6 +106,12 @@ func run() error {
 		pkiIndex = flag.String("pki-index", "", "easy-rsa index.txt, for listing users who have never connected (auto-detected when empty)")
 		serverCN = flag.String("server-cn", "server", "common name of the server's own certificate, excluded from the user list")
 
+		authUser     = flag.String("auth-user", "admin", "dashboard login name")
+		authHash     = flag.String("auth-password-hash", "", "bcrypt hash of the dashboard password; empty leaves the dashboard open")
+		authTTL      = flag.Duration("auth-session-ttl", 12*time.Hour, "how long a dashboard login lasts")
+		metricsToken = flag.String("metrics-token", "", "bearer token letting Prometheus scrape /metrics without a login")
+		hashPassword = flag.String("hash-password", "", "print a bcrypt hash for the given password and exit")
+
 		configPath = flag.String("config", defaultConfigPath, "configuration file; command-line flags win over it")
 	)
 	flag.Usage = func() {
@@ -117,6 +123,14 @@ func run() error {
 
 	if *showVer {
 		fmt.Printf("ovpnmon %s\n", version)
+		return nil
+	}
+	if *hashPassword != "" {
+		h, err := api.HashPassword(*hashPassword)
+		if err != nil {
+			return fmt.Errorf("hashing password: %w", err)
+		}
+		fmt.Printf("auth-password-hash = %s\n", h)
 		return nil
 	}
 	if flag.NArg() > 0 {
@@ -197,6 +211,22 @@ func run() error {
 		reg.MustRegister(metrics.NewStoreExporter(hist))
 	}
 
+	guard, err := api.NewAuth(api.AuthConfig{
+		User:         *authUser,
+		PasswordHash: *authHash,
+		MetricsToken: *metricsToken,
+		TTL:          *authTTL,
+	})
+	if err != nil {
+		return err
+	}
+	if guard == nil {
+		log.Warn("dashboard has no authentication",
+			"hint", "set auth-password-hash; generate one with 'ovpnmon -hash-password <password>'")
+	} else {
+		log.Info("dashboard authentication enabled", "user", *authUser)
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 
@@ -207,7 +237,9 @@ func run() error {
 	}()
 	go func() {
 		defer wg.Done()
-		srv := api.New(col, reg, hist, log).WithPKI(*pkiIndex, *serverCN)
+		srv := api.New(col, reg, hist, log).
+			WithPKI(*pkiIndex, *serverCN).
+			WithAuth(guard)
 		srvErr = api.Serve(ctx, *listen, srv.Handler(), log)
 	}()
 

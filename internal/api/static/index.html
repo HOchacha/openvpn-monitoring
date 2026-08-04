@@ -208,10 +208,52 @@
     color: var(--bad); padding: 10px 14px; border-radius: 8px; margin-bottom: 16px;
     font-size: 13px;
   }
+  .login-overlay {
+    position: fixed; inset: 0; z-index: 100;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--bg);
+  }
+  .login-card {
+    width: min(340px, calc(100vw - 40px));
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .login-card h2 { margin: 0; font-size: 17px; font-weight: 650; }
+  .login-note { margin: 0 0 6px; font-size: 12px; color: var(--muted); line-height: 1.45; }
+  .login-card input {
+    font: inherit; font-size: 14px; padding: 9px 11px; border-radius: 8px;
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  }
+  .login-card button {
+    font: inherit; font-size: 14px; font-weight: 600; padding: 9px; margin-top: 4px;
+    cursor: pointer; border-radius: 8px;
+    background: var(--accent); border: 1px solid var(--accent); color: #fff;
+  }
+  .login-err { color: var(--bad); font-size: 12px; min-height: 16px; }
+  #logoutBtn {
+    font: inherit; font-size: 12px; padding: 3px 10px; cursor: pointer;
+    background: var(--panel-2); color: var(--muted);
+    border: 1px solid var(--border); border-radius: 999px;
+  }
+  #logoutBtn:hover { color: var(--text); }
+
   .hidden { display: none; }
 </style>
 </head>
 <body>
+
+<div id="login" class="login-overlay hidden">
+  <form id="loginForm" class="login-card">
+    <h2>ovpnmon</h2>
+    <p class="login-note">This dashboard shows every VPN user's browsing destinations.</p>
+    <input name="user" placeholder="user" autocomplete="username" value="admin" required>
+    <input name="password" type="password" placeholder="password" autocomplete="current-password" required>
+    <button type="submit">Sign in</button>
+    <div class="login-err" id="loginErr"></div>
+  </form>
+</div>
+
 <header>
   <h1>ovpnmon</h1>
   <span class="sub" id="ifaceInfo"></span>
@@ -219,6 +261,7 @@
   <span class="pill"><span class="dot" id="wsDot"></span><span id="wsText">connecting</span></span>
   <span class="pill"><span class="dot" id="mgmtDot"></span>management</span>
   <span class="pill" id="updated">—</span>
+  <button id="logoutBtn" class="hidden">Sign out</button>
 </header>
 
 <main>
@@ -518,6 +561,7 @@ async function refreshUsers() {
   if (editingNotes.size) return;
   try {
     const res = await fetch("/api/users");
+    if (res.status === 401) { onUnauthorised(); return; }
     if (res.ok) renderUsers(await res.json());
   } catch (e) { /* the websocket banner already reports connectivity */ }
 }
@@ -615,6 +659,7 @@ $("histForm").addEventListener("submit", async (e) => {
 
   try {
     const res = await fetch(`/api/history/${mode}?${params}`);
+    if (res.status === 401) { onUnauthorised(); return; }
     if (!res.ok) throw new Error(await res.text() || res.statusText);
     const rows = await res.json();
 
@@ -645,9 +690,11 @@ fetch("/api/history/stats").then((r) => {
 
 // ------------------------------------------------------------------- live --
 
+let ws = null;
+
 function connect() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${proto}//${location.host}/api/stream`);
+  ws = new WebSocket(`${proto}//${location.host}/api/stream`);
 
   ws.onopen = () => {
     $("wsDot").className = "dot ok";
@@ -658,16 +705,78 @@ function connect() {
     if (frame.type === "snapshot") renderSnapshot(frame.snapshot);
     else if (frame.type === "event") pushEvent(frame.event);
   };
-  ws.onclose = () => {
+  ws.onclose = async () => {
     $("wsDot").className = "dot bad";
     $("wsText").textContent = "reconnecting";
+    // The stream is behind the same guard, so a lapsed session shows up here
+    // as a close that never recovers. Check before retrying forever.
+    if (authRequired && !(await checkAuth())) return;
     setTimeout(connect, 2000);
   };
   ws.onerror = () => ws.close();
 }
 
-connect();
-refreshUsers();
+// ------------------------------------------------------------------ auth --
+
+let authRequired = false;
+
+function showLogin(show) {
+  $("login").classList.toggle("hidden", !show);
+  $("logoutBtn").classList.toggle("hidden", !authRequired || show);
+}
+
+async function checkAuth() {
+  try {
+    const res = await fetch("/api/auth");
+    const a = await res.json();
+    authRequired = a.required;
+    showLogin(a.required && !a.authenticated);
+    return a.authenticated;
+  } catch {
+    return false;
+  }
+}
+
+$("loginForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const err = $("loginErr");
+  err.textContent = "";
+  try {
+    const res = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user: f.get("user"), password: f.get("password") }),
+    });
+    if (!res.ok) throw new Error(res.status === 401 ? "Invalid credentials" : await res.text());
+    e.target.reset();
+    showLogin(false);
+    start();
+  } catch (e2) {
+    err.textContent = e2.message;
+  }
+});
+
+$("logoutBtn").addEventListener("click", async () => {
+  await fetch("/api/logout", { method: "POST" });
+  if (ws) { ws.close(); ws = null; }
+  showLogin(true);
+});
+
+// A 401 from any fetch means the session lapsed; drop back to the form
+// rather than leaving stale numbers on screen.
+function onUnauthorised() {
+  showLogin(true);
+  if (ws) { ws.close(); ws = null; }
+}
+
+async function start() {
+  if (!(await checkAuth())) return;
+  connect();
+  refreshUsers();
+}
+
+start();
 // The list itself changes slowly (a new certificate, a first connection), so
 // it is refetched on a long interval; live throughput comes from snapshots.
 setInterval(() => {

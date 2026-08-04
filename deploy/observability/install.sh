@@ -82,6 +82,20 @@ install_prometheus() {
 configure_prometheus() {
 	log "Installing scrape config and rules into $PROM_DROPIN"
 	install -d -m 755 "$PROM_DROPIN"
+
+	# Carry ovpnmon's metrics token across so Prometheus can authenticate.
+	# Without it the scrape gets 401 and every panel goes blank.
+	tok=$(awk -F= '/^[[:space:]]*metrics-token[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); print $2}' \
+		"$OVPNMON_CONF" 2>/dev/null || true)
+	if [ -n "$tok" ]; then
+		printf '%s' "$tok" > "$PROM_DROPIN/token"
+		chmod 640 "$PROM_DROPIN/token"
+		chown root:prometheus "$PROM_DROPIN/token" 2>/dev/null || true
+		log "Metrics token copied for Prometheus"
+	elif grep -qE '^[[:space:]]*auth-password-hash[[:space:]]*=[[:space:]]*\S' "$OVPNMON_CONF" 2>/dev/null; then
+		warn "ovpnmon requires a login but has no metrics-token; Prometheus will get 401"
+		warn "  add 'metrics-token = <random>' to $OVPNMON_CONF and re-run"
+	fi
 	install -m 644 "$HERE/prometheus/ovpnmon-scrape.yml" "$PROM_DROPIN/scrape.yml"
 	install -m 644 "$HERE/prometheus/ovpnmon.rules.yml"  "$PROM_DROPIN/rules.yml"
 

@@ -226,6 +226,7 @@ sudo ./dev/test-client.sh down alice
 | `/api/events` | 최근 라이브 이벤트 (메모리) |
 | `/api/users` | **전체 사용자** — PKI 발급자 + 접속 이력 + 현재 접속 여부 |
 | `PUT /api/users/{cn}/note` | 사용자 메모 저장 (빈 값이면 삭제) |
+| `POST /api/login` · `/api/logout` | 대시보드 로그인 |
 | `/api/stream` | WebSocket 실시간 스트림 |
 | `/api/history/hosts` | **누가 어디로** — 목적지별 집계 |
 | `/api/history/sessions` | 접속 이력 |
@@ -562,6 +563,36 @@ make generate     # eBPF 재컴파일 + Go 바인딩 생성
 make vet          # go vet + gofmt 확인
 make test-root    # 커널 verifier 테스트 포함 전체 테스트
 ```
+
+## 로그인
+
+기본값은 **인증 없음**입니다. 대시보드를 루프백 밖으로 노출한다면 반드시 켜십시오 —
+이 화면은 모든 사용자의 접속 내역을 담고 있습니다.
+
+```bash
+ovpnmon -hash-password '<password>'      # 해시 출력
+```
+
+출력된 값을 `/opt/ovpnmon/etc/ovpnmon.conf`에 넣고 재시작합니다:
+
+```ini
+auth-user          = admin
+auth-password-hash = $2a$10$...
+metrics-token      = <긴 무작위 문자열>
+```
+
+- 세션은 **메모리에만** 있습니다. ovpnmon을 재시작하면 전원 로그아웃되고, 훔친 쿠키도
+  같이 무효가 됩니다
+- 쿠키는 `HttpOnly` + `SameSite=Strict`입니다. 다른 사이트가 운영자 쿠키로 메모를
+  수정하는 것을 막습니다
+- `/healthz`만 공개입니다 (로드밸런서 헬스체크). 나머지 `/api/*`와 `/metrics`는 세션이
+  필요합니다
+- **Prometheus는 브라우저 세션이 없으므로** `metrics-token`을 씁니다.
+  `make observability-config`가 이 값을 스크레이프 설정으로 복사합니다. 토큰 없이 인증만
+  켜면 Prometheus가 401을 받아 대시보드가 빈 채로 남습니다
+
+TLS는 아직 없습니다. 비밀번호가 평문으로 오가므로, 신뢰할 수 없는 망에 노출한다면 앞단에
+리버스 프록시로 HTTPS를 두십시오.
 
 ## Users 탭
 
