@@ -73,9 +73,8 @@ make deps-check
 
 ```bash
 make deps            # 빌드 툴체인 (필요하면 Go도 공식 tarball로 설치)
-make deps-openvpn    # 이 호스트에서 OpenVPN 서버도 돌릴 경우
 make deps-dev        # 테스트·벤치마크 도구 (bpftrace, iperf3, jq …)
-make deps-all        # 위 전부
+make deps-all        # 위 둘 다
 ```
 
 `make deps`는 필요한 Go 버전을 **`go.mod`에서 읽어** 판단합니다. 배포판이 제공하는
@@ -93,8 +92,8 @@ apt·dnf·yum·pacman을 인식하며, 그 외 배포판에서는 필요한 패�
 - 실행: root, 또는 `CAP_BPF` + `CAP_NET_ADMIN` + `CAP_PERFMON`
 
 > **OpenVPN 2.6의 DCO 주의.** Data Channel Offload가 켜지면 데이터 경로가 `ovpn-dco`
-> 커널 모듈로 옮겨가 tun 디바이스를 지나지 않습니다. 동봉된 서버 설정은 `disable-dco`로
-> 이를 끕니다. 기존 서버에 붙일 때도 같은 설정이 필요합니다.
+> 커널 모듈로 옮겨가 tun 디바이스를 지나지 않습니다. 서버 설정에 `disable-dco`가
+> 필요하며, `make preflight`가 이를 검사합니다.
 
 > **management 인터페이스는 동시 접속을 하나만 받습니다.** ovpnmon이 붙어 있는 동안
 > `telnet 127.0.0.1 7505`로 직접 접속하면 연결은 되지만 응답이 오지 않고 대기합니다.
@@ -104,48 +103,43 @@ apt·dnf·yum·pacman을 인식하며, 그 외 배포판에서는 필요한 패�
 
 ## 빠른 시작
 
-처음부터 전부 구축하는 경우:
+**OpenVPN 서버 구축은 이 저장소의 범위가 아닙니다.** 이미 쓰고 계신 방법을 그대로
+쓰십시오 — 없다면 [Nyr/openvpn-install](https://github.com/Nyr/openvpn-install)이
+좋은 기본값입니다. NAT·IP 포워딩·영속 방화벽 규칙까지 처리해 줍니다.
 
-```bash
-make deps-all                      # 툴체인 + OpenVPN 패키지
-sudo ./deploy/setup-openvpn.sh     # PKI + 서버 설정 + NAT + 테스트 인증서(alice, bob)
-make install                       # /opt/ovpnmon 에 설치
-sudo systemctl enable --now ovpnmon
-```
-
-브라우저에서 <http://127.0.0.1:9090> 을 엽니다.
-
-이미 운영 중인 OpenVPN 서버에 붙이는 경우, 서버 설정에 다음이 있어야 합니다:
-
-```
-management 127.0.0.1 7505
-disable-dco          # OpenVPN 2.6 이상
-```
-
-### 서비스로 설치
-
-```bash
-make install
-sudo systemctl enable --now ovpnmon
-```
-
-## 운영 중인 서버에 배포하기
-
-이미 돌고 있는 OpenVPN 서버에 붙이는 경우입니다. VPN 서버에서 직접:
+VPN이 이미 돌고 있다는 전제에서:
 
 ```bash
 git clone https://github.com/HOchacha/openvpn-monitoring
 cd openvpn-monitoring
+
+make preflight       # OpenVPN 쪽에 무엇이 필요한지, 재시작이 필요한지
+make install         # 빌드 + /opt/ovpnmon 에 설치
+sudo systemctl enable --now ovpnmon
 ```
+
+`make preflight`가 알려주는 대로 OpenVPN 설정에 **두 줄**을 추가해야 할 수 있습니다.
+그게 전부입니다:
+
+```
+management 127.0.0.1 7505     # 필수 — 없으면 "누가"를 알 수 없습니다
+disable-dco                   # OpenVPN 2.6+ 에서만
+```
+
+> Nyr 설치 스크립트가 만드는 `server.conf`에는 둘 다 없으므로 추가가 필요합니다.
+> 추가 후 OpenVPN을 한 번 재시작해야 하고, **그때 접속자가 끊깁니다.** ovpnmon
+> 자체를 설치·시작·중지하는 것은 기존 연결에 아무 영향이 없습니다.
+
+## 배포 상세
 
 ### 1. 점검 — 아무것도 바꾸지 않습니다
 
 ```bash
-make deps-check              # 커널·BTF·툴체인
-sudo ./deploy/preflight.sh   # OpenVPN 쪽에 필요한 변경과 중단 여부
+make deps-check   # 커널·BTF·툴체인
+make preflight    # OpenVPN 쪽에 필요한 변경과 중단 여부
 ```
 
-`preflight.sh`는 상태만 읽습니다. 알려주는 것 중 가장 중요한 건 **OpenVPN 재시작이
+`make preflight`는 상태만 읽습니다. 알려주는 것 중 가장 중요한 건 **OpenVPN 재시작이
 필요한지**입니다 — 재시작은 모든 클라이언트를 끊습니다.
 
 ```
@@ -259,13 +253,13 @@ sudo systemctl restart ovpnmon
 ### 테스트 클라이언트
 
 서버 설정은 `redirect-gateway`를 push하므로, **같은 호스트에서 그냥 클라이언트를 띄우면
-호스트의 기본 경로가 터널로 넘어가 SSH 세션이 끊깁니다.** `deploy/test-client.sh`는
+호스트의 기본 경로가 터널로 넘어가 SSH 세션이 끊깁니다.** `dev/test-client.sh`는
 클라이언트를 network namespace에 격리해 이 위험을 없앱니다.
 
 ```bash
-sudo ./deploy/test-client.sh up alice
-sudo ./deploy/test-client.sh exec alice -- curl -s https://example.com -o /dev/null
-sudo ./deploy/test-client.sh down alice
+sudo ./dev/test-client.sh up alice
+sudo ./dev/test-client.sh exec alice -- curl -s https://example.com -o /dev/null
+sudo ./dev/test-client.sh down alice
 ```
 
 ## 인터페이스
@@ -308,11 +302,9 @@ openvpn_probe_events_lost                                   링버퍼 유실 (0�
 
 | 유닛 | 실행 | 역할 |
 |---|---|---|
-| `openvpn-server@server` | `nobody`로 권한 강등 | VPN 서버 본체, tun0 생성, management 포트 |
 | `ovpnmon` | root | eBPF 프로브 + 대시보드/API/메트릭 |
-| `ovpn-firewall` | oneshot (부팅 시 1회) | NAT·FORWARD 규칙 복원 |
 
-셋 다 `enabled` 상태이며 부팅 시 자동 시작합니다.
+OpenVPN 서버 자체와 그 방화벽 규칙은 OpenVPN 설치 스크립트가 관리합니다.
 
 ### 파일
 
@@ -322,18 +314,16 @@ ovpnmon이 소유하는 것은 **전부 `/opt/ovpnmon` 아래 한 곳에** 있�
 ```
 /opt/ovpnmon/
 ├── bin/ovpnmon                 바이너리 (eBPF 오브젝트 임베드, ~25MB)
-├── bin/ovpn-firewall           NAT·FORWARD 규칙 스크립트
 ├── etc/ovpnmon.conf            ★ 설정 (0640) — 여기만 고치면 됩니다
 ├── etc/firewall.conf           서브넷·인터페이스
 ├── data/history.db{,-wal,-shm} ★ 접속 이력 (0600, 디렉토리 0700)
 └── README.md
 ```
 
-OS 규약상 다른 곳에 있어야 하는 것은 두 개의 systemd 유닛뿐입니다:
+OS 규약상 다른 곳에 있어야 하는 것은 systemd 유닛 하나뿐입니다:
 
 ```
 /etc/systemd/system/ovpnmon.service
-/etc/systemd/system/ovpn-firewall.service
 ```
 
 유닛은 `-config` 하나만 넘기고 나머지 설정은 전부 `etc/ovpnmon.conf`에 있으므로,
@@ -346,8 +336,7 @@ make uninstall   # 바이너리·설정·유닛 제거, data/ 이력은 보존
 make purge       # /opt/ovpnmon 통째로 삭제
 ```
 
-> 아래는 `deploy/setup-openvpn.sh`가 만드는 **OpenVPN 쪽** 파일입니다. ovpnmon과는
-> 별개이며, 이미 운영 중인 OpenVPN 서버에 붙이는 경우에는 생성되지 않습니다.
+> 아래는 OpenVPN 설치 스크립트가 만드는 파일입니다. ovpnmon과는 무관하며 여기서 관리하지 않습니다.
 >
 > ```
 > /etc/openvpn/server/{server.conf,ca.crt,server.crt}
@@ -370,13 +359,10 @@ make purge       # /opt/ovpnmon 통째로 삭제
 tun0                       VPN 인터페이스
 eBPF 프로그램 2개           tun0의 TCX ingress/egress
 BPF 맵 5개                  flows, sessions, events, probe_stats, scratch
-iptables 규칙 3개           NAT 1 + FORWARD 2
 ```
 
-이들은 재부팅하면 사라지므로 `ovpn-firewall` 유닛이 iptables 규칙을 다시 넣고,
-`ovpnmon`이 eBPF를 다시 붙입니다. **규칙을 인라인으로만 적용하면 재부팅 후 클라이언트가
-접속은 되는데 인터넷이 안 되는 상태가 됩니다** — VPN 문제처럼 보이지만 실제로는 NAT
-규칙이 사라진 것이라 진단이 까다롭습니다.
+재부팅하면 사라지고, `ovpnmon` 서비스가 기동하면서 다시 붙입니다. VPN의 NAT·포워딩
+규칙은 OpenVPN 설치 스크립트가 관리합니다.
 
 ### 빌드에만 필요한 것
 
@@ -411,11 +397,16 @@ ssh -N -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 ubuntu@<host>
 
 ### 외부에 노출하려면
 
-```bash
-sudo BIND_ADDR=0.0.0.0 ./deploy/observability/install.sh config
+`deploy/observability/observability.conf`를 고치고 다시 적용합니다:
+
+```ini
+bind_addr       = 0.0.0.0
+prometheus_port = 9091      # 9090 이 이미 쓰이고 있다면
 ```
 
-포트가 이미 쓰이고 있으면 `PROM_PORT`, `OVPNMON_PORT`로 바꿀 수 있습니다.
+```bash
+make observability-config
+```
 
 **노출 전에 반드시:**
 

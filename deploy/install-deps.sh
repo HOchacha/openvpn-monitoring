@@ -3,9 +3,12 @@
 #
 #   check     report every requirement without changing anything (no root)
 #   build     toolchain needed to build ovpnmon
-#   openvpn   packages needed to run deploy/setup-openvpn.sh
 #   dev       extra tooling for testing and benchmarking
-#   all       all of the above
+#   all       both of the above
+#
+# Installing OpenVPN itself is out of scope. Use whatever the server already
+# uses - https://github.com/Nyr/openvpn-install is a good default - and run
+# preflight.sh to see what ovpnmon needs added to it.
 #
 # The required Go version is read from go.mod rather than hardcoded, so this
 # stays correct when the module is bumped.
@@ -70,13 +73,10 @@ packages_for() {
 	local group=$1 pm=$2
 	case "$pm:$group" in
 		apt:build)      echo "clang llvm libbpf-dev libelf-dev zlib1g-dev make" ;;
-		apt:openvpn)    echo "openvpn easy-rsa iptables iproute2" ;;
 		apt:dev)        echo "linux-tools-common bpftrace iperf3 sqlite3 jq" ;;
 		dnf:build|yum:build)     echo "clang llvm libbpf-devel elfutils-libelf-devel zlib-devel make" ;;
-		dnf:openvpn|yum:openvpn) echo "openvpn easy-rsa iptables iproute" ;;
 		dnf:dev|yum:dev)         echo "bpftool bpftrace iperf3 sqlite jq" ;;
 		pacman:build)   echo "clang llvm libbpf libelf zlib make" ;;
-		pacman:openvpn) echo "openvpn easy-rsa iptables iproute2" ;;
 		pacman:dev)     echo "bpf bpftrace iperf3 sqlite jq" ;;
 		*) echo "" ;;
 	esac
@@ -260,10 +260,6 @@ case "${1:-check}" in
 		install_go
 		echo; check || true
 		;;
-	openvpn)
-		need_root
-		install_packages openvpn
-		;;
 	dev)
 		need_root
 		install_packages dev
@@ -271,13 +267,12 @@ case "${1:-check}" in
 	all)
 		need_root
 		install_packages build
-		install_packages openvpn
 		install_packages dev
 		install_go
 		echo; check || true
 		;;
 	*)
-		echo "usage: $0 {check|build|openvpn|dev|all}" >&2
+		echo "usage: $0 {check|build|dev|all}" >&2
 		exit 1
 		;;
 esac

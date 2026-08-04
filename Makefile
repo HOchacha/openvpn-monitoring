@@ -21,17 +21,12 @@ deps-check:
 deps:
 	sudo ./deploy/install-deps.sh build
 
-## deps-openvpn: install packages needed to run 'make server' (root)
-.PHONY: deps-openvpn
-deps-openvpn:
-	sudo ./deploy/install-deps.sh openvpn
-
 ## deps-dev: install test and benchmark tooling (root)
 .PHONY: deps-dev
 deps-dev:
 	sudo ./deploy/install-deps.sh dev
 
-## deps-all: build + openvpn + dev dependencies (root)
+## deps-all: build + development tooling (root)
 .PHONY: deps-all
 deps-all:
 	sudo ./deploy/install-deps.sh all
@@ -77,11 +72,6 @@ observability:
 observability-config:
 	sudo ./deploy/observability/install.sh config
 
-## server: install and configure the OpenVPN server (root)
-.PHONY: server
-server:
-	sudo ./deploy/setup-openvpn.sh
-
 ## install: install into $(PREFIX), keeping an existing config (root)
 .PHONY: install
 install: build
@@ -125,15 +115,20 @@ purge: uninstall
 	sudo rm -rf $(PREFIX)
 	@echo "$(PREFIX) removed entirely"
 
-## client-up: connect a test client in an isolated namespace (root)
-.PHONY: client-up
-client-up:
-	sudo ./deploy/test-client.sh up $(CLIENT)
+## dev-client-up: connect a namespaced test client, for development (root)
+.PHONY: dev-client-up
+dev-client-up:
+	sudo ./dev/test-client.sh up $(CLIENT)
 
-## client-down: tear the test client down (root)
-.PHONY: client-down
-client-down:
-	sudo ./deploy/test-client.sh down $(CLIENT)
+## dev-client-down: tear the test client down (root)
+.PHONY: dev-client-down
+dev-client-down:
+	sudo ./dev/test-client.sh down $(CLIENT)
+
+## dev-reset: restart the local lab into a known-good state (root)
+.PHONY: dev-reset
+dev-reset:
+	sudo ./dev/reset-lab.sh
 
 CLIENT ?= alice
 

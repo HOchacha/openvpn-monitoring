@@ -17,21 +17,35 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 OVPNMON_CONF=/opt/ovpnmon/etc/ovpnmon.conf
-OVPNMON_PORT="${OVPNMON_PORT:-9095}"
+OVPNMON_PORT_DEFAULT=9095
 PROM_CONF=/etc/prometheus/prometheus.yml
 PROM_DROPIN=/etc/prometheus/ovpnmon
-PROM_PORT="${PROM_PORT:-9090}"
 GRAFANA_DASHBOARDS=/var/lib/grafana/dashboards/ovpnmon
 
-# Listen addresses. The default is loopback because these endpoints carry
-# every VPN user's browsing destinations, so reaching them should take a
-# deliberate act. Override to publish them:
-#
-#   sudo BIND_ADDR=0.0.0.0 ./install.sh config
-#
-# Anything other than 127.0.0.1 needs authentication in front of it, and
-# Grafana's admin password must not still be the default.
+# Settings come from observability.conf beside this script, so the deployment
+# is described by a file in the repository rather than by whatever environment
+# a command happened to run with. Environment variables still win, which keeps
+# one-off overrides possible without editing the file.
+CONF="${OBSERVABILITY_CONF:-$HERE/observability.conf}"
+if [ -f "$CONF" ]; then
+	while IFS='=' read -r key value; do
+		key=$(echo "$key" | tr -d '[:space:]')
+		value=$(echo "$value" | sed 's/[[:space:]]//g')
+		case "$key" in
+			''|'#'*) continue ;;
+			bind_addr)       : "${BIND_ADDR:=$value}" ;;
+			ovpnmon_port)    : "${OVPNMON_PORT:=$value}" ;;
+			prometheus_port) : "${PROM_PORT:=$value}" ;;
+			grafana_port)    : "${GRAFANA_PORT:=$value}" ;;
+			*) echo "warning: unknown setting '$key' in $CONF" >&2 ;;
+		esac
+	done < "$CONF"
+fi
+
 BIND_ADDR="${BIND_ADDR:-127.0.0.1}"
+OVPNMON_PORT="${OVPNMON_PORT:-$OVPNMON_PORT_DEFAULT}"
+PROM_PORT="${PROM_PORT:-9090}"
+GRAFANA_PORT="${GRAFANA_PORT:-3000}"
 
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m warn\033[0m %s\n' "$*"; }
@@ -167,6 +181,9 @@ configure_grafana() {
 		log "Setting Grafana to listen on $BIND_ADDR"
 		sed -i -E "s|^;?\s*http_addr\s*=.*|http_addr = $BIND_ADDR|" /etc/grafana/grafana.ini
 	fi
+	if ! grep -qE "^\s*http_port\s*=\s*$GRAFANA_PORT\s*$" /etc/grafana/grafana.ini; then
+		sed -i -E "s|^;?\s*http_port\s*=.*|http_port = $GRAFANA_PORT|" /etc/grafana/grafana.ini
+	fi
 	if [ "$BIND_ADDR" != "127.0.0.1" ]; then
 		warn "Grafana is now reachable off-host; change the admin password:"
 		warn "  sudo grafana-cli admin reset-admin-password <new>"
@@ -185,11 +202,11 @@ summary() {
 	[ "$host" = "0.0.0.0" ] && host=$(ip -o route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1); exit}')
 	printf '    %-12s %s\n' "ovpnmon"    "http://$host:$OVPNMON_PORT/   (dashboard, /metrics)"
 	printf '    %-12s %s\n' "Prometheus" "http://$host:$PROM_PORT/"
-	printf '    %-12s %s\n' "Grafana"    "http://$host:3000/"
+	printf '    %-12s %s\n' "Grafana"    "http://$host:$GRAFANA_PORT/"
 	echo
 	if [ "$BIND_ADDR" = "127.0.0.1" ]; then
 		echo "    All three bind to loopback. Reach them with an SSH tunnel:"
-		echo "      ssh -N -L 3000:127.0.0.1:3000 -L $PROM_PORT:127.0.0.1:$PROM_PORT <user>@<host>"
+		echo "      ssh -N -L $GRAFANA_PORT:127.0.0.1:$GRAFANA_PORT -L $PROM_PORT:127.0.0.1:$PROM_PORT <user>@<host>"
 	else
 		echo "    These are reachable off-host and expose every VPN user's"
 		echo "    browsing destinations. Restrict them at the firewall and put"
