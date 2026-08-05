@@ -65,7 +65,8 @@ func Dial(ctx context.Context, addr, password string) (*Client, error) {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return nil, fmt.Errorf("connecting to management interface %s: %w", addr, err)
+		return nil, fmt.Errorf("connecting to management interface %s: %w%s",
+			addr, err, because(addr))
 	}
 
 	c := &Client{
@@ -80,11 +81,24 @@ func Dial(ctx context.Context, addr, password string) (*Client, error) {
 
 	if err := c.authenticate(ctx, password); err != nil {
 		conn.Close()
-		return nil, err
+		// A slot already taken accepts the connection and then says nothing,
+		// so this is where holding it usually surfaces - as a read timeout
+		// that reads like a slow network.
+		return nil, fmt.Errorf("%w%s", err, because(addr))
 	}
 
 	go c.readLoop()
 	return c, nil
+}
+
+// because appends a diagnosis when there is one to give, as a trailing clause
+// on the error rather than a separate log line - whatever prints the failure
+// then explains it, including /healthz and the dashboard.
+func because(addr string) string {
+	if why := Diagnose(addr); why != "" {
+		return " (" + why + ")"
+	}
+	return ""
 }
 
 // authenticate handles the password prompt, if there is one.
