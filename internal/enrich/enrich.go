@@ -29,6 +29,15 @@ type Identity struct {
 
 	// VMs the account owns.
 	VMCount int `json:"vm_count,omitempty"`
+
+	// Ambiguous is set when the common name matches more than one account and
+	// the provider refuses to guess which. Every other field is empty in that
+	// case; Candidates says what it could have been.
+	//
+	// Reported rather than silently resolved: picking one would attribute a
+	// person's traffic to the wrong tenant, and nothing on screen would say so.
+	Ambiguous  bool     `json:"ambiguous,omitempty"`
+	Candidates []string `json:"candidates,omitempty"`
 }
 
 // NetworkRef is one network belonging to an account.
@@ -87,6 +96,7 @@ type Stats struct {
 	Error       string    `json:"error,omitempty"`
 	LastRefresh time.Time `json:"last_refresh,omitempty"`
 	Users       int       `json:"users"`
+	Ambiguous   int       `json:"ambiguous,omitempty"`
 	Addresses   int       `json:"addresses"`
 	Networks    int       `json:"networks"`
 }

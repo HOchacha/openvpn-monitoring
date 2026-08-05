@@ -654,6 +654,29 @@ Users 탭에서 접속 중인 사용자 옆의 **Disconnect** 버튼으로 연�
 02:09:05  kill  bob  disconnected by admin
 ```
 
+## CloudStack 연동 (선택)
+
+`cloudstack-url`과 API 키를 설정하면, 사용자와 목적지에 CloudStack이 아는 이름이
+함께 표시됩니다 — 어떤 계정인지, 어떤 Isolated 네트워크를 갖고 있는지, 그리고 접속한
+주소가 누구의 VM인지.
+
+```
+# ovpnmon.conf
+cloudstack-url = http://cloudstack:8080/client/api
+cloudstack-api-key = <api key>
+cloudstack-secret-key = <secret key>
+```
+
+설정하지 않으면 ovpnmon은 CloudStack을 전혀 호출하지 않고, 화면도 지금과 같습니다.
+읽기 전용 호출만 하므로 **읽기 전용 계정으로 키를 발급하세요.**
+
+인증서 CN은 CloudStack 사용자명(또는 계정명)과 대조됩니다. 사용자명은 도메인 안에서만
+유일하므로, 여러 도메인에 같은 이름이 있으면 **어느 쪽으로도 해석하지 않고** 후보를
+보여줍니다 — 하나를 골랐다가는 어떤 사람의 트래픽이 다른 테넌트 것으로 기록됩니다.
+그럴 때는 `eng.admin`처럼 도메인을 한정한 이름으로 인증서를 발급하면 됩니다.
+
+매핑 규칙과 캐시 동작은 **[docs/cloudstack.md](docs/cloudstack.md)** 에 정리했습니다.
+
 ## 사용자 임시 차단
 
 Users 탭의 `⋮` 메뉴에서 **Block temporarily…** 로 기간과 사유를 정해 차단합니다.

@@ -224,6 +224,10 @@
   .res { font-weight: 600; }
   .tag.res-tag { color: var(--accent); border-color: var(--accent); }
   .tag.blocked-tag { color: var(--bad); border-color: var(--bad); font-weight: 600; }
+  .identity.ambiguous {
+    background: color-mix(in srgb, var(--warn) 9%, var(--panel-2));
+    border-top-color: color-mix(in srgb, var(--warn) 30%, var(--border));
+  }
   .tag.net-tag { color: var(--muted); }
   button.kill {
     font: inherit; font-size: 11px; font-weight: 600; padding: 3px 10px;
@@ -748,6 +752,20 @@ function renderUsers(users) {
         <span class="idlabel">${esc(enrichSource)}</span>
         <span class="idmeta">no matching account for this common name</span>
       </div>
+    </div>` : (id && id.ambiguous) ? `<div class="identity ambiguous">
+      <div class="idrow">
+        <span class="idlabel">${esc(id.source)}</span>
+        <span class="idmain">이름이 여러 계정과 일치합니다</span>
+      </div>
+      <div class="idrow">
+        <span class="idlabel">candidates</span>
+        ${(id.candidates || []).map((c) => `<span class="tag bad-tag">${esc(c)}</span>`).join("")}
+      </div>
+      <div class="idrow">
+        <span class="idlabel"></span>
+        <span class="idmeta">Nothing is attributed to either account. Name the
+          certificate for one of them, e.g. ${esc((id.candidates || [""])[0].replace(/\//g, "."))}</span>
+      </div>
     </div>` : id ? `<div class="identity">
       <div class="idrow">
         <span class="idlabel">${esc(id.source)}</span>
@@ -793,7 +811,11 @@ function renderUsers(users) {
         ${s ? `<span class="vip">${esc(s.virtual_ip)}</span>` : ""}
         ${cert}
         ${u.block ? `<span class="tag blocked-tag">blocked${u.block.until ? " · " + untilText(u.block.until) : ""}</span>` : ""}
-        ${u.identity && u.identity.account ? '<span class="tag res-tag" title="' + esc(u.identity.source) + '">' + esc(u.identity.account) + '</span>' : ""}
+        ${u.identity && u.identity.ambiguous
+          ? '<span class="tag bad-tag" title="matches ' + esc((u.identity.candidates || []).join(", ")) + '">ambiguous name</span>'
+          : u.identity && u.identity.account
+            ? '<span class="tag res-tag" title="' + esc(u.identity.source) + '">' + esc(u.identity.account) + '</span>'
+            : ""}
         ${u.note ? '<span class="tag has-note" title="' + esc(u.note) + '">note</span>' : ""}
         <span class="meta">${meta}</span>
         ${rightSide}
@@ -1099,7 +1121,8 @@ async function refreshStatus() {
     } else {
       const zero = (n) => n ? String(n) : `<span class="bad-val">0</span>`;
       pill.innerHTML = `${esc(enrichSource)} · users ${zero(e.users)}`
-        + ` · addresses ${zero(e.addresses)} · networks ${zero(e.networks)}`;
+        + ` · addresses ${zero(e.addresses)} · networks ${zero(e.networks)}`
+        + (e.ambiguous ? ` · <span class="bad-val">${e.ambiguous} ambiguous</span>` : "");
       pill.title = `last refreshed ${e.last_refresh ? new Date(e.last_refresh).toLocaleTimeString() : "never"}`
         + (e.addresses ? "" : "\nNo VM addresses known, so destinations cannot be named.");
     }

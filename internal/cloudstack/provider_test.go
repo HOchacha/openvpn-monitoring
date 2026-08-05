@@ -77,6 +77,8 @@ func staticHandler(t *testing.T) http.HandlerFunc {
 			_, _ = w.Write([]byte(sampleVMs))
 		case "listNetworks":
 			_, _ = w.Write([]byte(sampleNets))
+		case "listDomains":
+			_, _ = w.Write([]byte(sampleDomains))
 		default:
 			http.Error(w, "unexpected command", http.StatusBadRequest)
 		}
@@ -265,6 +267,8 @@ func TestRefreshWalksEveryPage(t *testing.T) {
 			_, _ = w.Write([]byte(`{"listvirtualmachinesresponse":{"count":0}}`))
 		case "listNetworks":
 			_, _ = w.Write([]byte(`{"listnetworksresponse":{"count":0}}`))
+		case "listDomains":
+			_, _ = w.Write([]byte(sampleDomains))
 		}
 	})
 
@@ -299,6 +303,8 @@ func TestPaginationStopsOnAnEmptyPage(t *testing.T) {
 			_, _ = w.Write([]byte(`{"listvirtualmachinesresponse":{"count":0}}`))
 		case "listNetworks":
 			_, _ = w.Write([]byte(`{"listnetworksresponse":{"count":0}}`))
+		case "listDomains":
+			_, _ = w.Write([]byte(sampleDomains))
 		}
 	})
 
@@ -358,6 +364,8 @@ func TestFailedRefreshKeepsPreviousView(t *testing.T) {
 			_, _ = w.Write([]byte(sampleVMs))
 		case "listNetworks":
 			_, _ = w.Write([]byte(sampleNets))
+		case "listDomains":
+			_, _ = w.Write([]byte(sampleDomains))
 		}
 	})
 
@@ -438,5 +446,149 @@ func TestStatsCountsTheView(t *testing.T) {
 	}
 	if st.LastRefresh.IsZero() {
 		t.Error("last refresh was not recorded")
+	}
+}
+
+// ---------------------------------------------------- domain disambiguation ---
+
+const (
+	// The same username in two domains. CloudStack allows this: usernames are
+	// unique within a domain, not globally.
+	collidingUsers = `{"listusersresponse":{"count":3,"user":[
+		{"id":"u-1","username":"admin","account":"admin","domain":"eng","domainid":"d-eng",
+		 "firstname":"Eng","lastname":"Admin","state":"enabled"},
+		{"id":"u-2","username":"admin","account":"admin","domain":"ops","domainid":"d-ops",
+		 "firstname":"Ops","lastname":"Admin","state":"enabled"},
+		{"id":"u-3","username":"solo","account":"solo","domain":"eng","domainid":"d-eng",
+		 "firstname":"Only","lastname":"One","state":"enabled"}]}}`
+
+	sampleDomains = `{"listdomainsresponse":{"count":3,"domain":[
+		{"id":"d-root","name":"ROOT","path":"ROOT","level":0},
+		{"id":"d-eng","name":"eng","path":"ROOT/eng","level":1},
+		{"id":"d-ops","name":"ops","path":"ROOT/ops","level":1}]}}`
+)
+
+func collidingProvider(t *testing.T) *Provider {
+	t.Helper()
+	p := fakeCloudStack(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("command") {
+		case "listUsers":
+			_, _ = w.Write([]byte(collidingUsers))
+		case "listDomains":
+			_, _ = w.Write([]byte(sampleDomains))
+		case "listVirtualMachines":
+			_, _ = w.Write([]byte(`{"listvirtualmachinesresponse":{"count":0}}`))
+		case "listNetworks":
+			_, _ = w.Write([]byte(`{"listnetworksresponse":{"count":0}}`))
+		}
+	})
+	if err := p.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	return p
+}
+
+// The bug this replaced: the last user in the listing silently won, so a VPN
+// user's traffic was attributed to whichever tenant happened to sort last.
+func TestCollidingUsernameResolvesToNeither(t *testing.T) {
+	p := collidingProvider(t)
+
+	id, ok := p.LookupUser("admin")
+	if !ok {
+		t.Fatal("an ambiguous name should still report what it could mean")
+	}
+	if !id.Ambiguous {
+		t.Fatalf("resolved to a single account instead of reporting ambiguity: %+v", id)
+	}
+	if id.Account != "" || id.Email != "" || id.VMCount != 0 {
+		t.Errorf("an ambiguous identity must carry no account data: %+v", id)
+	}
+	if len(id.Candidates) != 2 {
+		t.Fatalf("candidates = %v, want two", id.Candidates)
+	}
+	// Sorted, so the dashboard does not reorder them between refreshes.
+	if id.Candidates[0] != "ROOT/eng/admin" || id.Candidates[1] != "ROOT/ops/admin" {
+		t.Errorf("candidates = %v", id.Candidates)
+	}
+}
+
+// A collision must not poison names that are unique.
+func TestUniqueUsernameStillResolves(t *testing.T) {
+	p := collidingProvider(t)
+
+	id, ok := p.LookupUser("solo")
+	if !ok || id.Ambiguous {
+		t.Fatalf("solo did not resolve cleanly: ok=%v id=%+v", ok, id)
+	}
+	if id.Account != "solo" || id.Domain != "ROOT/eng" {
+		t.Errorf("account/domain = %q/%q", id.Account, id.Domain)
+	}
+}
+
+// Qualifying the common name is how a deployment names colliding users apart.
+// "/" cannot appear in a certificate ovpnmon issues, so the separators a common
+// name can actually carry have to work too.
+func TestQualifiedNamesDisambiguate(t *testing.T) {
+	p := collidingProvider(t)
+
+	for _, cn := range []string{
+		"ROOT/eng/admin", // full path
+		"eng/admin",      // leaf domain
+		"eng.admin",      // separators a certificate can hold
+		"eng_admin",
+	} {
+		t.Run(cn, func(t *testing.T) {
+			id, ok := p.LookupUser(cn)
+			if !ok {
+				t.Fatalf("%q did not resolve", cn)
+			}
+			if id.Ambiguous {
+				t.Fatalf("%q is ambiguous: %+v", cn, id)
+			}
+			if id.DisplayName != "Eng Admin" {
+				t.Errorf("%q resolved to %q, want the eng user", cn, id.DisplayName)
+			}
+		})
+	}
+
+	id, _ := p.LookupUser("ops.admin")
+	if id.DisplayName != "Ops Admin" {
+		t.Errorf("ops.admin resolved to %q", id.DisplayName)
+	}
+}
+
+func TestStatsCountsAmbiguousNames(t *testing.T) {
+	p := collidingProvider(t)
+	st := p.Stats()
+	if st.Ambiguous == 0 {
+		t.Errorf("ambiguous names are not reported: %+v", st)
+	}
+}
+
+// A user whose account name differs from their login can be addressed by
+// either, since which one a certificate was named after is not knowable here.
+func TestAccountNameIsAlsoAnAlias(t *testing.T) {
+	p := fakeCloudStack(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("command") {
+		case "listUsers":
+			_, _ = w.Write([]byte(`{"listusersresponse":{"count":1,"user":[
+				{"id":"u-1","username":"j.doe","account":"engineering","domain":"eng",
+				 "domainid":"d-eng","firstname":"Jane","lastname":"Doe","state":"enabled"}]}}`))
+		case "listDomains":
+			_, _ = w.Write([]byte(sampleDomains))
+		case "listVirtualMachines":
+			_, _ = w.Write([]byte(`{"listvirtualmachinesresponse":{"count":0}}`))
+		case "listNetworks":
+			_, _ = w.Write([]byte(`{"listnetworksresponse":{"count":0}}`))
+		}
+	})
+	if err := p.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, cn := range []string{"j.doe", "engineering", "eng.engineering"} {
+		if _, ok := p.LookupUser(cn); !ok {
+			t.Errorf("%q did not resolve", cn)
+		}
 	}
 }
