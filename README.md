@@ -654,6 +654,36 @@ Users 탭에서 접속 중인 사용자 옆의 **Disconnect** 버튼으로 연�
 02:09:05  kill  bob  disconnected by admin
 ```
 
+## 사용자 임시 차단
+
+Users 탭의 `⋮` 메뉴에서 **Block temporarily…** 로 기간과 사유를 정해 차단합니다.
+현재 세션이 끊기고, 만료까지 재접속이 거부됩니다.
+
+> **인증서는 유효한 상태로 남습니다.** 키가 유출된 경우라면 차단이 아니라 폐기를
+> 써야 합니다. 차단은 "금요일까지 막아둬"에 해당하고, 스스로 만료됩니다.
+
+`client-config-dir`에 `disable` 한 줄짜리 파일을 두는 OpenVPN 자체의 기능을 씁니다.
+OpenVPN이 접속마다 그 디렉터리를 다시 읽으므로 **차단에도 해제에도 재시작이
+필요 없습니다**. 만료는 ovpnmon이 15초마다 대조해 처리합니다.
+
+```
+02:30:38  block    boan  blocked by admin until 2026-08-05T02:32:08Z: 오용 조사 중
+02:32:08  (만료)   block expired  common_name=boan
+```
+
+차단된 사용자는 접속 중이 아니어도 목록 맨 위에 붉게 표시됩니다 — 차단당했기 때문에
+오프라인인 것이므로, 접속 여부로만 정렬하면 방금 조치한 행이 목록 아래로 가라앉습니다.
+
+쓰려면 `server.conf`에 다음이 있어야 하고, 추가하려면 OpenVPN 재시작이 한 번
+필요합니다(`preflight.sh`가 확인해 줍니다):
+
+```
+client-config-dir /etc/openvpn/ccd
+```
+
+결정이 어디서 내려지는지, ovpnmon이 죽으면 어떻게 되는지, 손으로 푸는 방법은
+**[docs/blocking.md](docs/blocking.md)** 에 정리해 두었습니다.
+
 ## 라이브 갱신 제어
 
 헤더의 컨트롤로 화면이 다시 그려지는 속도를 조절합니다.

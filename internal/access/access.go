@@ -179,7 +179,12 @@ func (m *Manager) writeFile(b store.Block) error {
 
 	var sb strings.Builder
 	sb.WriteString(marker + "\n")
-	sb.WriteString("# written by ovpnmon; delete this file to unblock\n")
+	// Not "delete this to unblock": while ovpnmon is running it puts this
+	// file back within a reconcile interval, because a file lost to a botched
+	// deploy must not silently unblock anyone. By hand only works with
+	// ovpnmon stopped.
+	sb.WriteString("# written by ovpnmon; lift this block from the dashboard\n")
+	sb.WriteString("# (removing this file by hand only holds while ovpnmon is stopped)\n")
 	fmt.Fprintf(&sb, "# blocked at %s by %s\n",
 		b.CreatedAt.Format(time.RFC3339), orNone(b.CreatedBy))
 	fmt.Fprintf(&sb, "# until %s\n", untilText(b))
