@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/ubuntu/openvpn-monitoring/internal/ebpfx"
+	"github.com/ubuntu/openvpn-monitoring/internal/enrich"
 	"github.com/ubuntu/openvpn-monitoring/internal/mgmt"
 	"github.com/ubuntu/openvpn-monitoring/internal/resolver"
 	"github.com/ubuntu/openvpn-monitoring/internal/store"
@@ -43,6 +44,10 @@ type Config struct {
 	// Store, when set, receives a durable copy of sessions, per-destination
 	// traffic and observations. Nil disables history entirely.
 	Store *store.Store
+
+	// Enricher, when set, names destinations in terms of the infrastructure
+	// they belong to. Nil means destinations are reported exactly as observed.
+	Enricher enrich.Provider
 }
 
 // Defaults fills in anything the caller left zero.
@@ -75,18 +80,23 @@ func (c *Config) Defaults() {
 
 // Destination is one place a client has been talking to.
 type Destination struct {
-	RemoteIP    netip.Addr `json:"remote_ip"`
-	Hostname    string     `json:"hostname,omitempty"`
-	NameSource  string     `json:"name_source,omitempty"`
-	Port        uint16     `json:"port"`
-	Proto       string     `json:"proto"`
-	Service     string     `json:"service,omitempty"`
-	TxBytes     uint64     `json:"tx_bytes"`
-	RxBytes     uint64     `json:"rx_bytes"`
-	Packets     uint64     `json:"packets"`
-	Connections uint32     `json:"connections"`
-	FirstSeen   time.Time  `json:"first_seen"`
-	LastSeen    time.Time  `json:"last_seen"`
+	RemoteIP   netip.Addr `json:"remote_ip"`
+	Hostname   string     `json:"hostname,omitempty"`
+	NameSource string     `json:"name_source,omitempty"`
+	Port       uint16     `json:"port"`
+	Proto      string     `json:"proto"`
+	Service    string     `json:"service,omitempty"`
+
+	// Resource is what this address is in the operator's infrastructure,
+	// when an enrichment provider recognises it.
+	Resource *enrich.Resource `json:"resource,omitempty"`
+
+	TxBytes     uint64    `json:"tx_bytes"`
+	RxBytes     uint64    `json:"rx_bytes"`
+	Packets     uint64    `json:"packets"`
+	Connections uint32    `json:"connections"`
+	FirstSeen   time.Time `json:"first_seen"`
+	LastSeen    time.Time `json:"last_seen"`
 }
 
 // SessionView is a connected client plus everything observed about it.
@@ -738,6 +748,7 @@ func (c *Collector) rebuild() {
 				Port:        e.port,
 				Proto:       protoName(e.proto),
 				Service:     serviceName(e.proto, e.port),
+				Resource:    c.resourceFor(e.remoteIP),
 				TxBytes:     e.tx,
 				RxBytes:     e.rx,
 				Packets:     e.packets,
@@ -974,6 +985,19 @@ func (c *Collector) KillSession(ctx context.Context, clientID uint32, who string
 		CommonName: cn, ClientIP: ip,
 		Detail: "disconnected by " + who,
 	})
+	return nil
+}
+
+// resourceFor asks the enrichment provider what an address is, if one is
+// configured. Providers serve this from a cache; it is called once per
+// destination on every scrape.
+func (c *Collector) resourceFor(addr netip.Addr) *enrich.Resource {
+	if c.cfg.Enricher == nil {
+		return nil
+	}
+	if r, ok := c.cfg.Enricher.LookupAddress(addr); ok {
+		return &r
+	}
 	return nil
 }
 

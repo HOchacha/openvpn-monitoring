@@ -25,7 +25,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/ubuntu/openvpn-monitoring/internal/api"
+	"github.com/ubuntu/openvpn-monitoring/internal/cloudstack"
 	"github.com/ubuntu/openvpn-monitoring/internal/collector"
+	"github.com/ubuntu/openvpn-monitoring/internal/enrich"
 	"github.com/ubuntu/openvpn-monitoring/internal/metrics"
 	"github.com/ubuntu/openvpn-monitoring/internal/pki"
 	"github.com/ubuntu/openvpn-monitoring/internal/store"
@@ -114,6 +116,12 @@ func run() error {
 		metricsToken = flag.String("metrics-token", "", "bearer token letting Prometheus scrape /metrics without a login")
 		hashPassword = flag.String("hash-password", "", "print a bcrypt hash for the given password and exit")
 
+		csURL      = flag.String("cloudstack-url", "", "CloudStack API endpoint, e.g. http://cs:8080/client/api (empty disables the integration)")
+		csKey      = flag.String("cloudstack-api-key", "", "CloudStack API key")
+		csSecret   = flag.String("cloudstack-secret-key", "", "CloudStack secret key")
+		csRefresh  = flag.Duration("cloudstack-refresh", time.Minute, "how often to reload the CloudStack view")
+		csInsecure = flag.Bool("cloudstack-insecure", false, "skip TLS verification for the CloudStack endpoint")
+
 		manageCerts = flag.Bool("manage-certificates", false, "allow issuing and revoking client certificates from the dashboard")
 		serverConf  = flag.String("server-conf", "/etc/openvpn/server/server.conf", "OpenVPN config, checked for crl-verify when revoking")
 		vpnHost     = flag.String("vpn-host", "", "address clients use to reach this VPN, written into generated profiles (defaults to this host's outbound address)")
@@ -188,6 +196,35 @@ func run() error {
 		mgmtPassword = strings.TrimRight(string(raw), "\r\n")
 	}
 
+	// An identity source is optional. Without one the core has no idea
+	// CloudStack exists; with one, users and destinations gain a second
+	// dimension - who they are in the infrastructure, not just on the wire.
+	var enricher enrich.Provider
+	if *csURL != "" {
+		p, err := cloudstack.NewProvider(cloudstack.Config{
+			URL:                *csURL,
+			APIKey:             *csKey,
+			SecretKey:          *csSecret,
+			InsecureSkipVerify: *csInsecure,
+		}, log)
+		if err != nil {
+			return fmt.Errorf("cloudstack: %w", err)
+		}
+
+		probe, cancel := context.WithTimeout(ctx, 15*time.Second)
+		err = p.Ping(probe)
+		cancel()
+		if err != nil {
+			// Not fatal: the VPN is still worth watching if CloudStack is
+			// unreachable, and the provider retries on its own schedule.
+			log.Warn("cloudstack unreachable; continuing without it", "error", err)
+		}
+
+		go p.Run(ctx, *csRefresh)
+		enricher = p
+		log.Info("cloudstack integration enabled", "url", *csURL, "refresh", *csRefresh)
+	}
+
 	col, err := collector.New(collector.Config{
 		Interface:    *iface,
 		VPNSubnet:    prefix,
@@ -197,6 +234,7 @@ func run() error {
 		FlowIdle:     *flowIdle,
 		NameTTL:      *nameTTL,
 		Store:        hist,
+		Enricher:     enricher,
 	}, log)
 	if err != nil {
 		if errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EPERM) {
@@ -273,7 +311,8 @@ func run() error {
 		srv := api.New(col, reg, hist, log).
 			WithPKI(*pkiIndex, *serverCN).
 			WithAuth(guard).
-			WithCertManager(certMgr, *serverConf)
+			WithCertManager(certMgr, *serverConf).
+			WithEnricher(enricher)
 		srvErr = api.Serve(ctx, *listen, srv.Handler(), log)
 	}()
 

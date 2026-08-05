@@ -204,6 +204,31 @@
   .note .status { font-size: 12px; color: var(--muted); }
   .note .status.err { color: var(--bad); }
   .has-note { color: var(--warn); }
+
+  /* Infrastructure identity: a second dimension on a user, kept visually
+     distinct from the traffic data so it is obvious which is observed and
+     which is looked up. */
+  .identity {
+    border-top: 1px solid var(--border);
+    padding: 10px 16px;
+    background: var(--panel-2);
+  }
+  .idrow { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .idrow + .idrow { margin-top: 8px; }
+  .idlabel {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--muted); min-width: 76px;
+  }
+  .idmain { font-weight: 600; }
+  .idmeta { font-size: 12px; color: var(--muted); }
+  .res { font-weight: 600; }
+  .tag.res-tag { color: var(--accent); border-color: var(--accent); }
+  .tag.net-tag { color: var(--muted); }
+
+  /* Header status for the identity source. "addresses 0" is the difference
+     between a broken integration and an empty CloudStack. */
+  .pill.enrich { font-family: var(--mono); font-size: 11.5px; }
+  .pill.enrich .bad-val { color: var(--bad); }
   button.kill {
     font: inherit; font-size: 11px; font-weight: 600; padding: 3px 10px;
     cursor: pointer; border-radius: 6px; flex-shrink: 0;
@@ -301,6 +326,7 @@
   <span class="spacer"></span>
   <span class="pill"><span class="dot" id="wsDot"></span><span id="wsText">connecting</span></span>
   <span class="pill"><span class="dot" id="mgmtDot"></span>management</span>
+  <span class="pill enrich hidden" id="enrichPill"></span>
   <div class="live-controls">
     <button id="pauseBtn" title="Pause live updates">⏸</button>
     <select id="rateSel" title="How often the view redraws">
@@ -531,11 +557,25 @@ function destinationRows(dests) {
     const name = d.hostname || "";
     const src = d.name_source ? `<span class="tag ${esc(d.name_source)}">${esc(d.name_source)}</span>` : "";
     const svc = d.service ? `<span class="tag">${esc(d.service)}</span>` : "";
+
+    // A destination that is one of our own VMs is named as that VM. The
+    // instance name is what an operator acts on; a reverse-DNS name or a bare
+    // address does not tell you whose machine it is.
+    const r = d.resource;
+    const label = r
+      ? `<span class="res">${esc(r.display_name || r.name)}</span>
+         <span class="tag res-tag" title="${esc(r.source)}: ${esc(r.kind)}${r.state ? ", " + esc(r.state) : ""}">${esc(r.kind)}</span>
+         ${r.account ? `<span class="tag">${esc(r.account)}</span>` : ""}`
+      : (name ? esc(name) + " " + src : '<span class="ip">' + esc(d.remote_ip) + "</span>");
+    const hover = r
+      ? `${r.name}${r.network ? " on " + r.network : ""}${r.account ? " · " + r.account : ""}`
+      : (name || d.remote_ip);
+
     return `<tr>
-      <td class="host" title="${esc(name || d.remote_ip)}">
-        ${name ? esc(name) : '<span class="ip">' + esc(d.remote_ip) + "</span>"} ${src}
+      <td class="host" title="${esc(hover)}">
+        ${label}
       </td>
-      <td class="ip">${name ? esc(d.remote_ip) : ""}</td>
+      <td class="ip">${esc(d.remote_ip)}${r && name ? " · " + esc(name) : ""}</td>
       <td class="num">${esc(d.proto)}/${d.port} ${svc}</td>
       <td class="num up">${bytes(d.tx_bytes)}</td>
       <td class="num down">${bytes(d.rx_bytes)}</td>
@@ -581,6 +621,33 @@ function renderUsers(users) {
             : "")
         + (u.last_address ? ` · last from ${esc(u.last_address)}` : "");
 
+    // What this certificate holder is in the infrastructure, when an identity
+    // source recognises the name. Shown for offline users too: knowing whose
+    // account a dormant certificate belongs to is the point.
+    const id = u.identity;
+    // Showing nothing cannot be told apart from a broken integration. When an
+    // identity source is configured and does not know this name, say so.
+    const identityBox = (!id && enrichSource) ? `<div class="identity">
+      <div class="idrow">
+        <span class="idlabel">${esc(enrichSource)}</span>
+        <span class="idmeta">no matching account for this common name</span>
+      </div>
+    </div>` : id ? `<div class="identity">
+      <div class="idrow">
+        <span class="idlabel">${esc(id.source)}</span>
+        <span class="idmain">${esc(id.display_name || id.account || "")}</span>
+        ${id.account ? `<span class="tag">${esc(id.account)}</span>` : ""}
+        ${id.domain && id.domain !== "ROOT" ? `<span class="tag">${esc(id.domain)}</span>` : ""}
+        ${id.state && id.state !== "enabled" ? `<span class="tag bad-tag">${esc(id.state)}</span>` : ""}
+        ${id.email ? `<span class="idmeta">${esc(id.email)}</span>` : ""}
+        <span class="idmeta">${id.vm_count || 0} VM${id.vm_count === 1 ? "" : "s"}</span>
+      </div>
+      ${(id.networks && id.networks.length) ? `<div class="idrow idnets">
+        <span class="idlabel">networks</span>
+        ${id.networks.map((n) => `<span class="tag net-tag" title="${esc(n.type || "")}${n.zone ? " · " + esc(n.zone) : ""}">${esc(n.name)}${n.cidr ? " " + esc(n.cidr) : ""}</span>`).join("")}
+      </div>` : ""}
+    </div>` : "";
+
     const body = s
       ? `<div class="scroll"><table>
            <thead><tr>
@@ -609,6 +676,7 @@ function renderUsers(users) {
         <span class="cn">${esc(u.common_name)}</span>
         ${s ? `<span class="vip">${esc(s.virtual_ip)}</span>` : ""}
         ${cert}
+        ${u.identity && u.identity.account ? '<span class="tag res-tag" title="' + esc(u.identity.source) + '">' + esc(u.identity.account) + '</span>' : ""}
         ${u.note ? '<span class="tag has-note" title="' + esc(u.note) + '">note</span>' : ""}
         <span class="meta">${meta}</span>
         ${rightSide}
@@ -620,6 +688,7 @@ function renderUsers(users) {
           <button class="act danger" data-revoke="${esc(u.common_name)}"
                   title="Revoke this certificate">Revoke</button>` : ""}
       </summary>
+      ${identityBox}
       ${body}
       ${noteBox}
     </details>`;
@@ -714,6 +783,36 @@ function patchOnlineUsers(sessions) {
 }
 
 let certsEnabled = false;
+let enrichSource = "";     // name of the identity source, "" when none
+
+// The header carries enough of the identity source's state to tell a broken
+// integration from an empty one. "addresses 0" is exactly that difference:
+// credentials work, CloudStack simply has no VMs yet.
+async function refreshStatus() {
+  const pill = $("enrichPill");
+  try {
+    const res = await fetch("/api/enrichment");
+    if (!res.ok) throw new Error(res.statusText);
+    const e = await res.json();
+    if (!e.enabled) { enrichSource = ""; pill.classList.add("hidden"); return; }
+
+    enrichSource = e.source || "identity";
+    pill.classList.remove("hidden");
+    if (!e.healthy) {
+      pill.innerHTML = `<span class="bad-val">${esc(enrichSource)} unreachable</span>`;
+      pill.title = e.error || "the last refresh failed";
+    } else {
+      const zero = (n) => n ? String(n) : `<span class="bad-val">0</span>`;
+      pill.innerHTML = `${esc(enrichSource)} · users ${zero(e.users)}`
+        + ` · addresses ${zero(e.addresses)} · networks ${zero(e.networks)}`;
+      pill.title = `last refreshed ${e.last_refresh ? new Date(e.last_refresh).toLocaleTimeString() : "never"}`
+        + (e.addresses ? "" : "\nNo VM addresses known, so destinations cannot be named.");
+    }
+  } catch {
+    enrichSource = "";
+    pill.classList.add("hidden");
+  }
+}
 
 // Certificate actions only appear when the server has a writable PKI; probing
 // once avoids offering buttons that can only return 501.
@@ -725,6 +824,7 @@ async function checkCerts() {
     certsEnabled = res.status !== 501;
   } catch { certsEnabled = false; }
   $("issueForm").classList.toggle("hidden", !certsEnabled);
+  await refreshStatus();
 }
 
 $("issueForm").addEventListener("submit", async (e) => {
@@ -1035,6 +1135,7 @@ start();
 // it is refetched on a long interval; live throughput comes from snapshots.
 setInterval(() => {
   if (!$("viewUsers").classList.contains("hidden")) refreshUsers();
+  refreshStatus();
 }, 15000);
 </script>
 </body>

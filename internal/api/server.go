@@ -17,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/ubuntu/openvpn-monitoring/internal/collector"
+	"github.com/ubuntu/openvpn-monitoring/internal/enrich"
 	"github.com/ubuntu/openvpn-monitoring/internal/pki"
 	"github.com/ubuntu/openvpn-monitoring/internal/store"
 )
@@ -44,6 +45,15 @@ type Server struct {
 	// leaves certificate management unavailable rather than half-working.
 	pkiMgr     *pki.Manager
 	serverConf string
+
+	// enricher is nil unless an identity source is configured.
+	enricher enrich.Provider
+}
+
+// WithEnricher attaches an external identity source.
+func (s *Server) WithEnricher(e enrich.Provider) *Server {
+	s.enricher = e
+	return s
 }
 
 // WithCertManager enables issuing and revoking certificates.
@@ -108,6 +118,7 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("DELETE /api/certificates/{common_name}", s.handleRevokeCert)
 	protected.HandleFunc("GET /api/certificates/{common_name}/profile", s.handleDownloadProfile)
 	protected.HandleFunc("GET /api/stream", s.handleStream)
+	protected.HandleFunc("GET /api/enrichment", s.handleEnrichment)
 
 	if s.store != nil {
 		protected.HandleFunc("GET /api/history/sessions", s.handleHistorySessions)
@@ -175,6 +186,23 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok\n"))
+}
+
+// handleEnrichment reports the state of the identity source, if any.
+//
+// Separate from /healthz on purpose: a stale CloudStack view degrades the
+// dashboard's labelling, but the VPN monitoring itself is unaffected, so it
+// must not make the service look unhealthy to a load balancer.
+func (s *Server) handleEnrichment(w http.ResponseWriter, r *http.Request) {
+	if s.enricher == nil {
+		writeJSON(w, map[string]any{"enabled": false})
+		return
+	}
+	st := s.enricher.Stats()
+	writeJSON(w, struct {
+		Enabled bool `json:"enabled"`
+		enrich.Stats
+	}{true, st})
 }
 
 // handleStream pushes live events and periodic snapshots over a WebSocket.

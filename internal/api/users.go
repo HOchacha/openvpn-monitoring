@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ubuntu/openvpn-monitoring/internal/collector"
+	"github.com/ubuntu/openvpn-monitoring/internal/enrich"
 	"github.com/ubuntu/openvpn-monitoring/internal/pki"
 	"github.com/ubuntu/openvpn-monitoring/internal/store"
 )
@@ -42,6 +43,10 @@ type User struct {
 	// An operator's note about this user.
 	Note        string     `json:"note,omitempty"`
 	NoteUpdated *time.Time `json:"note_updated_at,omitempty"`
+
+	// Identity is who this is according to an external system, when one is
+	// configured and recognises the common name.
+	Identity *enrich.Identity `json:"identity,omitempty"`
 }
 
 // handleUsers returns every known user, online or not.
@@ -122,6 +127,17 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 				u.Note = n.Note
 				t := n.UpdatedAt
 				u.NoteUpdated = &t
+			}
+		}
+	}
+
+	// An external identity source, when configured, says who these names are in
+	// the system the operator actually administers. Applied last, so it covers
+	// users that only the live session list knows about.
+	if s.enricher != nil {
+		for cn, u := range users {
+			if id, ok := s.enricher.LookupUser(cn); ok {
+				u.Identity = &id
 			}
 		}
 	}
