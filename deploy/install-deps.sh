@@ -239,6 +239,29 @@ check() {
 		warn "bpftool" "optional"
 	fi
 
+	# Certificate management shells out to easyrsa, from the PKI directory
+	# rather than from PATH. What matters is that an easy-rsa installation
+	# exists at all - the OpenVPN installer normally provides one, so this is
+	# reported, never installed.
+	local easyrsa_dir=""
+	for d in /etc/openvpn/easy-rsa /etc/openvpn/server/easy-rsa \
+	         /usr/share/easy-rsa /etc/easy-rsa; do
+		[ -x "$d/easyrsa" ] && { easyrsa_dir="$d"; break; }
+	done
+	if [ -n "$easyrsa_dir" ]; then
+		ok "easy-rsa" "$easyrsa_dir"
+	else
+		warn "easy-rsa" "not found; -manage-certificates cannot issue or revoke"
+		printf '          %sinstall it with your OpenVPN server, or: apt install easy-rsa%s\n' "$D" "$N"
+	fi
+	# easyrsa is a wrapper around openssl; without it every certificate
+	# operation fails with a message from a script rather than a clear one.
+	if command -v openssl >/dev/null; then
+		ok "openssl" "$(openssl version 2>/dev/null | cut -d" " -f1-2)"
+	else
+		warn "openssl" "required by easy-rsa for certificate operations"
+	fi
+
 	echo
 	if [ "$fail" -eq 0 ]; then
 		log "${G}Ready to build.${N}  make build && sudo make install"
