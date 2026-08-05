@@ -8,6 +8,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -17,6 +18,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -24,6 +26,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/ubuntu/openvpn-monitoring/internal/access"
 	"github.com/ubuntu/openvpn-monitoring/internal/api"
 	"github.com/ubuntu/openvpn-monitoring/internal/cloudstack"
 	"github.com/ubuntu/openvpn-monitoring/internal/collector"
@@ -121,6 +124,11 @@ func run() error {
 		csSecret   = flag.String("cloudstack-secret-key", "", "CloudStack secret key")
 		csRefresh  = flag.Duration("cloudstack-refresh", time.Minute, "how often to reload the CloudStack view")
 		csInsecure = flag.Bool("cloudstack-insecure", false, "skip TLS verification for the CloudStack endpoint")
+
+		ccdDir = flag.String("ccd-dir", "",
+			"OpenVPN's client-config-dir, enabling temporary blocking (auto-detected from the server config when empty)")
+		blockCheck = flag.Duration("block-check", 15*time.Second,
+			"how often expired blocks are lifted")
 
 		manageCerts = flag.Bool("manage-certificates", false, "allow issuing and revoking client certificates from the dashboard")
 		serverConf  = flag.String("server-conf", "/etc/openvpn/server/server.conf", "OpenVPN config, checked for crl-verify when revoking")
@@ -273,6 +281,23 @@ func run() error {
 		log.Info("dashboard authentication enabled", "user", *authUser)
 	}
 
+	// Temporary blocking needs somewhere OpenVPN actually reads. Without a
+	// client-config-dir the feature stays off rather than accepting blocks it
+	// cannot enforce.
+	var blocker *access.Manager
+	if dir := resolveCCD(*ccdDir, *serverConf, log); dir != "" {
+		if hist == nil {
+			log.Warn("ignoring client-config-dir: blocking needs history enabled (-store), "+
+				"so a block has somewhere to expire from", "dir", dir)
+		} else if m, err := access.New(dir, hist, col, log); err != nil {
+			log.Warn("temporary blocking unavailable", "error", err)
+		} else {
+			blocker = m
+			go blocker.Run(ctx, *blockCheck)
+			log.Info("temporary blocking enabled", "client_config_dir", dir)
+		}
+	}
+
 	// Certificate management stays off unless asked for: it runs easyrsa as
 	// root and hands out private keys, which is a different level of authority
 	// from watching traffic.
@@ -312,7 +337,8 @@ func run() error {
 			WithPKI(*pkiIndex, *serverCN).
 			WithAuth(guard).
 			WithCertManager(certMgr, *serverConf).
-			WithEnricher(enricher)
+			WithEnricher(enricher).
+			WithBlocking(blocker)
 		srvErr = api.Serve(ctx, *listen, srv.Handler(), log)
 	}()
 
@@ -338,4 +364,45 @@ func outboundAddr() string {
 	defer c.Close()
 	host, _, _ := net.SplitHostPort(c.LocalAddr().String())
 	return host
+}
+
+// resolveCCD finds the client-config directory OpenVPN is actually using.
+//
+// Reading it out of the server configuration rather than asking the operator
+// to repeat it means the two cannot drift apart - a directory ovpnmon writes
+// to but OpenVPN does not read would make every block silently do nothing.
+func resolveCCD(explicit, serverConf string, log *slog.Logger) string {
+	if explicit != "" {
+		return explicit
+	}
+	if serverConf == "" {
+		return ""
+	}
+
+	f, err := os.Open(serverConf)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if !strings.HasPrefix(line, "client-config-dir") {
+			continue
+		}
+		dir := strings.TrimSpace(strings.TrimPrefix(line, "client-config-dir"))
+		dir = strings.Trim(dir, `"'`)
+		if dir == "" {
+			continue
+		}
+		// OpenVPN resolves a relative path against its own working directory,
+		// which is where the server config lives.
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(filepath.Dir(serverConf), dir)
+		}
+		log.Debug("found client-config-dir", "dir", dir, "from", serverConf)
+		return dir
+	}
+	return ""
 }

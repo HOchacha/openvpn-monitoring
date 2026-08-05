@@ -988,6 +988,36 @@ func (c *Collector) KillSession(ctx context.Context, clientID uint32, who string
 	return nil
 }
 
+// KillByCommonName ends every session a user currently holds, returning how
+// many were ended.
+//
+// A common name can hold more than one session at a time - OpenVPN allows it
+// unless duplicate-cn is off - so blocking a user has to end all of them, not
+// whichever one happened to be found first.
+func (c *Collector) KillByCommonName(ctx context.Context, commonName, who string) (int, error) {
+	c.mu.RLock()
+	var ids []uint32
+	for _, s := range c.sessions {
+		if s.CommonName == commonName {
+			ids = append(ids, s.ClientID)
+		}
+	}
+	c.mu.RUnlock()
+
+	killed := 0
+	var firstErr error
+	for _, id := range ids {
+		if err := c.KillSession(ctx, id, who); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		killed++
+	}
+	return killed, firstErr
+}
+
 // resourceFor asks the enrichment provider what an address is, if one is
 // configured. Providers serve this from a cache; it is called once per
 // destination on every scrape.

@@ -223,12 +223,8 @@
   .idmeta { font-size: 12px; color: var(--muted); }
   .res { font-weight: 600; }
   .tag.res-tag { color: var(--accent); border-color: var(--accent); }
+  .tag.blocked-tag { color: var(--bad); border-color: var(--bad); font-weight: 600; }
   .tag.net-tag { color: var(--muted); }
-
-  /* Header status for the identity source. "addresses 0" is the difference
-     between a broken integration and an empty CloudStack. */
-  .pill.enrich { font-family: var(--mono); font-size: 11.5px; }
-  .pill.enrich .bad-val { color: var(--bad); }
   button.kill {
     font: inherit; font-size: 11px; font-weight: 600; padding: 3px 10px;
     cursor: pointer; border-radius: 6px; flex-shrink: 0;
@@ -245,6 +241,92 @@
   .act:hover { color: var(--text); }
   .act.danger { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); }
   .act:disabled { opacity: 0.5; cursor: default; }
+
+  /* A blocked user is an administrative state, not an absence. The row says so
+     on its own so it reads as "we did this", not "they went away". */
+  .session.blocked { border-left: 3px solid var(--bad); }
+  .session.blocked .cn { color: var(--bad); }
+  .blockline {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 9px 16px; font-size: 12.5px;
+    background: color-mix(in srgb, var(--bad) 8%, var(--panel-2));
+    border-top: 1px solid color-mix(in srgb, var(--bad) 25%, var(--border));
+  }
+  .blockline .why { color: var(--muted); }
+
+  /* Destructive actions live behind a menu. Disconnect, block and revoke
+     differ in consequence by orders of magnitude; as four peer buttons in one
+     row they invite the wrong click. */
+  .menu { position: relative; flex-shrink: 0; }
+  .menu > button {
+    font: inherit; font-size: 13px; line-height: 1; font-weight: 700;
+    padding: 4px 8px; cursor: pointer; border-radius: 6px;
+    background: transparent; color: var(--muted); border: 1px solid transparent;
+  }
+  .menu > button:hover { color: var(--text); border-color: var(--border); }
+  .menu-list {
+    position: absolute; right: 0; top: calc(100% + 4px); z-index: 20;
+    min-width: 200px; padding: 5px;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 9px; box-shadow: 0 8px 24px rgba(0,0,0,0.16);
+  }
+  .menu-list button, .menu-list a {
+    display: block; width: 100%; text-align: left; text-decoration: none;
+    font: inherit; font-size: 12.5px; padding: 7px 10px; border-radius: 6px;
+    background: transparent; color: var(--text); border: 0; cursor: pointer;
+  }
+  .menu-list button:hover, .menu-list a:hover { background: var(--panel-2); }
+  .menu-list .danger { color: var(--bad); font-weight: 600; }
+  .menu-list hr { border: 0; border-top: 1px solid var(--border); margin: 5px 0; }
+
+  /* Blocking dialog. The consequence text is the point of having a dialog at
+     all instead of two prompt() calls. */
+  dialog.modal {
+    padding: 0; border: 1px solid var(--border); border-radius: 12px;
+    background: var(--panel); color: var(--text); max-width: 440px; width: 92vw;
+  }
+  dialog.modal::backdrop { background: rgba(0,0,0,0.45); }
+  .modal h2 { margin: 0; padding: 15px 18px; font-size: 14.5px; border-bottom: 1px solid var(--border); }
+  .modal .body { padding: 16px 18px; display: flex; flex-direction: column; gap: 13px; }
+  .modal label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  .choices { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .choices button {
+    font: inherit; font-size: 12.5px; font-weight: 600; padding: 6px 13px;
+    cursor: pointer; border-radius: 7px;
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  }
+  .choices button[aria-pressed="true"] {
+    background: var(--accent); border-color: var(--accent); color: #fff;
+  }
+  .modal input[type=text] {
+    width: 100%; font: inherit; font-size: 13px; padding: 7px 10px; margin-top: 6px;
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 7px;
+  }
+  .consequence {
+    font-size: 12.5px; line-height: 1.5; padding: 10px 12px; border-radius: 8px;
+    background: color-mix(in srgb, var(--warn) 10%, var(--panel-2));
+    border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--border));
+  }
+  .consequence b { color: var(--warn); }
+  .modal .foot {
+    display: flex; justify-content: flex-end; gap: 8px;
+    padding: 12px 18px; border-top: 1px solid var(--border);
+  }
+  .modal .foot button {
+    font: inherit; font-size: 13px; font-weight: 600; padding: 7px 16px;
+    cursor: pointer; border-radius: 7px;
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  }
+  .modal .foot button.primary {
+    background: var(--bad); border-color: var(--bad); color: #fff;
+  }
+  .modal .err { color: var(--bad); font-size: 12.5px; margin-right: auto; align-self: center; }
+
+  /* Header status for the identity source. "addresses 0" is the difference
+     between a broken integration and an empty CloudStack. */
+  .pill.enrich { font-family: var(--mono); font-size: 11.5px; }
+  .pill.enrich .bad-val { color: var(--bad); }
 
   .empty { color: var(--muted); padding: 26px 16px; text-align: center; font-size: 13px; }
   .banner {
@@ -327,6 +409,7 @@
   <span class="pill"><span class="dot" id="wsDot"></span><span id="wsText">connecting</span></span>
   <span class="pill"><span class="dot" id="mgmtDot"></span>management</span>
   <span class="pill enrich hidden" id="enrichPill"></span>
+  <span class="pill hidden" id="blockPill"></span>
   <div class="live-controls">
     <button id="pauseBtn" title="Pause live updates">⏸</button>
     <select id="rateSel" title="How often the view redraws">
@@ -398,6 +481,39 @@
     </section>
   </div>
 </main>
+
+<dialog class="modal" id="blockDialog">
+  <form method="dialog" id="blockForm">
+    <h2 id="blockTitle">Block user</h2>
+    <div class="body">
+      <div>
+        <label>For how long</label>
+        <div class="choices" id="blockChoices">
+          <button type="button" value="1h">1 hour</button>
+          <button type="button" value="8h">8 hours</button>
+          <button type="button" value="24h">24 hours</button>
+          <button type="button" value="">Indefinitely</button>
+        </div>
+        <input type="text" id="blockCustom" placeholder="or type one: 30m, 2h, 7d" autocomplete="off">
+      </div>
+      <div>
+        <label for="blockReason">Reason (optional)</label>
+        <input type="text" id="blockReason" maxlength="200" autocomplete="off"
+               placeholder="Recorded in the audit log and in the file OpenVPN reads">
+      </div>
+      <p class="consequence">
+        Ends the current session and refuses new connections until the block
+        expires. <b>The certificate stays valid</b> — if a key is compromised,
+        revoke it instead.
+      </p>
+    </div>
+    <div class="foot">
+      <span class="err" id="blockErr"></span>
+      <button type="button" id="blockCancel">Cancel</button>
+      <button type="button" class="primary" id="blockConfirm">Block</button>
+    </div>
+  </form>
+</dialog>
 
 <script>
 "use strict";
@@ -670,24 +786,21 @@ function renderUsers(users) {
       </div>
     </div>`;
 
-    return `<details class="session" data-user="${esc(key)}" ${openUsers.has(key) ? "open" : ""}>
+    return `<details class="session${u.block ? " blocked" : ""}" data-user="${esc(key)}" ${openUsers.has(key) ? "open" : ""}>
       <summary>
         <span class="dot ${s ? "ok" : ""}"></span>
         <span class="cn">${esc(u.common_name)}</span>
         ${s ? `<span class="vip">${esc(s.virtual_ip)}</span>` : ""}
         ${cert}
+        ${u.block ? `<span class="tag blocked-tag">blocked${u.block.until ? " · " + untilText(u.block.until) : ""}</span>` : ""}
         ${u.identity && u.identity.account ? '<span class="tag res-tag" title="' + esc(u.identity.source) + '">' + esc(u.identity.account) + '</span>' : ""}
         ${u.note ? '<span class="tag has-note" title="' + esc(u.note) + '">note</span>' : ""}
         <span class="meta">${meta}</span>
         ${rightSide}
-        ${s ? `<button class="kill" data-kill="${s.client_id}" data-kill-name="${esc(u.common_name)}"
-                       title="End this connection">Disconnect</button>` : ""}
-        ${certsEnabled && u.cert_status === "valid" ? `
-          <a class="act" href="/api/certificates/${encodeURIComponent(u.common_name)}/profile"
-             download title="Download .ovpn (contains the private key)">Profile</a>
-          <button class="act danger" data-revoke="${esc(u.common_name)}"
-                  title="Revoke this certificate">Revoke</button>` : ""}
+        ${primaryAction(u, s)}
+        ${actionMenu(u, s)}
       </summary>
+      ${blockLine(u)}
       ${identityBox}
       ${body}
       ${noteBox}
@@ -704,6 +817,7 @@ function renderUsers(users) {
   host.querySelectorAll("[data-revoke]").forEach((btn) => {
     btn.addEventListener("click", (e) => {
       e.preventDefault(); e.stopPropagation();
+      closeMenus();
       revokeCert(btn.dataset.revoke, btn);
     });
   });
@@ -721,6 +835,34 @@ function renderUsers(users) {
     });
   });
 
+  host.querySelectorAll("[data-menu]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      // The row is a <summary>; without this the click also toggles it open.
+      e.preventDefault(); e.stopPropagation();
+      const list = host.querySelector(`[data-menu-for="${CSS.escape(btn.dataset.menu)}"]`);
+      const wasOpen = list && !list.classList.contains("hidden");
+      closeMenus();
+      if (list && !wasOpen) list.classList.remove("hidden");
+    });
+  });
+  host.querySelectorAll(".menu-list").forEach((list) => {
+    list.addEventListener("click", (e) => e.stopPropagation());
+  });
+
+  host.querySelectorAll("[data-block]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      closeMenus();
+      blockUser(btn.dataset.block);
+    });
+  });
+  host.querySelectorAll("[data-unblock]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      unblockUser(btn.dataset.unblock, btn);
+    });
+  });
+
   host.querySelectorAll("[data-save-note]").forEach((btn) => {
     btn.addEventListener("click", () => saveNote(btn.dataset.saveNote));
   });
@@ -730,6 +872,158 @@ function renderUsers(users) {
     ta.addEventListener("input", () => editingNotes.add(ta.dataset.noteFor));
   });
 }
+
+// The one action that fits the row's current state. Everything heavier lives
+// behind the menu, where it takes a deliberate second click.
+function primaryAction(u, s) {
+  if (u.block) {
+    return `<button class="act" data-unblock="${esc(u.common_name)}"
+                    title="Let this user connect again">Unblock</button>`;
+  }
+  if (s) {
+    return `<button class="kill" data-kill="${s.client_id}" data-kill-name="${esc(u.common_name)}"
+                    title="End this connection; they can reconnect immediately">Disconnect</button>`;
+  }
+  return "";
+}
+
+function actionMenu(u, s) {
+  const cn = u.common_name;
+  const items = [];
+  if (certsEnabled && u.cert_status === "valid") {
+    items.push(`<a href="/api/certificates/${encodeURIComponent(cn)}/profile" download
+                   title="Contains the private key">Download profile</a>`);
+  }
+  if (blockingEnabled && !u.block) {
+    items.push(`<button type="button" data-block="${esc(cn)}">Block temporarily…</button>`);
+  }
+  if (certsEnabled && u.cert_status === "valid") {
+    if (items.length) items.push("<hr>");
+    items.push(`<button type="button" class="danger" data-revoke="${esc(cn)}">Revoke certificate</button>`);
+  }
+  if (!items.length) return "";
+  return `<div class="menu">
+    <button type="button" data-menu="${esc(cn)}" title="More actions" aria-label="More actions">⋮</button>
+    <div class="menu-list hidden" data-menu-for="${esc(cn)}">${items.join("")}</div>
+  </div>`;
+}
+
+// The block gets a line of its own: who did it, why, and when it lifts.
+function blockLine(u) {
+  if (!u.block) return "";
+  const b = u.block;
+  const when = b.until
+    ? `until ${new Date(b.until).toLocaleString()} · ${untilText(b.until)}`
+    : "until an operator lifts it";
+  return `<div class="blockline">
+    <span>⛔ <b>Blocked</b> ${esc(when)}</span>
+    <span class="why">${esc(b.created_by ? "by " + b.created_by : "")}${b.reason ? " — " + b.reason : ""}</span>
+  </div>`;
+}
+
+// A block bars the next connection; it does not revoke anything. Saying so
+// where the operator clicks is what keeps the two apart in their head.
+function blockTitle(b) {
+  const parts = [];
+  parts.push(b.until ? "blocked until " + new Date(b.until).toLocaleString()
+                     : "blocked until further notice");
+  if (b.reason) parts.push("reason: " + b.reason);
+  if (b.created_by) parts.push("by " + b.created_by);
+  return parts.join(" · ");
+}
+
+// How long is left, in the same shape as the rest of the dashboard's times.
+function untilText(iso) {
+  const secs = Math.round((new Date(iso) - Date.now()) / 1000);
+  if (secs <= 0) return "expiring";
+  if (secs < 60) return secs + "s left";
+  if (secs < 3600) return Math.round(secs / 60) + "m left";
+  if (secs < 86400) return Math.round(secs / 3600) + "h left";
+  return Math.round(secs / 86400) + "d left";
+}
+
+let blockTarget = null;      // common name the dialog is about
+let blockDuration = "1h";    // currently selected preset, "" = indefinite
+
+function blockUser(cn) {
+  blockTarget = cn;
+  blockDuration = "1h";
+  $("blockTitle").textContent = `Block ${cn}`;
+  $("blockReason").value = "";
+  $("blockCustom").value = "";
+  $("blockErr").textContent = "";
+  markChoice("1h");
+  $("blockDialog").showModal();
+  $("blockReason").focus();
+}
+
+// Highlights the chosen preset. A null value means the custom field is in use,
+// so nothing is highlighted and the typed duration wins.
+function markChoice(value) {
+  $("blockChoices").querySelectorAll("button").forEach((b) => {
+    b.setAttribute("aria-pressed", value !== null && b.value === value ? "true" : "false");
+  });
+}
+
+$("blockChoices").addEventListener("click", (e) => {
+  const btn = e.target.closest("button");
+  if (!btn) return;
+  blockDuration = btn.value;
+  $("blockCustom").value = "";
+  markChoice(btn.value);
+});
+
+// Typing a duration overrides whichever preset was selected.
+$("blockCustom").addEventListener("input", () => {
+  const v = $("blockCustom").value.trim();
+  if (v) { blockDuration = v; markChoice(null); }
+  else { blockDuration = "1h"; markChoice("1h"); }
+});
+
+$("blockCancel").addEventListener("click", () => $("blockDialog").close());
+
+$("blockConfirm").addEventListener("click", async () => {
+  const cn = blockTarget;
+  if (!cn) return;
+  const btn = $("blockConfirm");
+  btn.disabled = true;
+  $("blockErr").textContent = "";
+  try {
+    const res = await fetch(`/api/users/${encodeURIComponent(cn)}/block`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ duration: blockDuration, reason: $("blockReason").value.trim() }),
+    });
+    if (res.status === 401) { onUnauthorised(); return; }
+    if (!res.ok) throw new Error((await res.text()).trim().split("\n")[0] || res.statusText);
+    $("blockDialog").close();
+    refreshUsers();
+  } catch (err) {
+    $("blockErr").textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+async function unblockUser(cn, btn) {
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/users/${encodeURIComponent(cn)}/block`, { method: "DELETE" });
+    if (res.status === 401) { onUnauthorised(); return; }
+    if (!res.ok) throw new Error((await res.text()).trim().split("\n")[0] || res.statusText);
+    refreshUsers();
+  } catch (err) {
+    alert(`Could not unblock ${cn}: ${err.message}`);
+    btn.disabled = false;
+  }
+}
+
+// An open menu must not survive a click elsewhere, or a background refresh.
+function closeMenus() {
+  document.querySelectorAll(".menu-list").forEach((m) => m.classList.add("hidden"));
+}
+document.addEventListener("click", closeMenus);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenus(); });
 
 // Rows whose note is being edited right now; refreshUsers skips re-rendering
 // while any is open, so a periodic refresh cannot discard what someone typed.
@@ -783,6 +1077,7 @@ function patchOnlineUsers(sessions) {
 }
 
 let certsEnabled = false;
+let blockingEnabled = false;
 let enrichSource = "";     // name of the identity source, "" when none
 
 // The header carries enough of the identity source's state to tell a broken
@@ -812,6 +1107,26 @@ async function refreshStatus() {
     enrichSource = "";
     pill.classList.add("hidden");
   }
+
+  const bp = $("blockPill");
+  if (!blockingEnabled) { bp.classList.add("hidden"); return; }
+  try {
+    const res = await fetch("/api/blocks");
+    const data = await res.json();
+    const n = (data.blocks || []).length;
+    bp.classList.toggle("hidden", n === 0);
+    bp.textContent = n === 1 ? "1 user blocked" : `${n} users blocked`;
+  } catch { bp.classList.add("hidden"); }
+}
+
+// Blocking needs both history and OpenVPN's client-config-dir; without them
+// the buttons would only ever return 501.
+async function checkBlocking() {
+  try {
+    const res = await fetch("/api/blocks");
+    if (!res.ok) { blockingEnabled = false; return; }
+    blockingEnabled = !!(await res.json()).enabled;
+  } catch { blockingEnabled = false; }
 }
 
 // Certificate actions only appear when the server has a writable PKI; probing
@@ -824,6 +1139,7 @@ async function checkCerts() {
     certsEnabled = res.status !== 501;
   } catch { certsEnabled = false; }
   $("issueForm").classList.toggle("hidden", !certsEnabled);
+  await checkBlocking();
   await refreshStatus();
 }
 

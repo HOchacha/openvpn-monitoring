@@ -16,6 +16,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/ubuntu/openvpn-monitoring/internal/access"
 	"github.com/ubuntu/openvpn-monitoring/internal/collector"
 	"github.com/ubuntu/openvpn-monitoring/internal/enrich"
 	"github.com/ubuntu/openvpn-monitoring/internal/pki"
@@ -48,6 +49,16 @@ type Server struct {
 
 	// enricher is nil unless an identity source is configured.
 	enricher enrich.Provider
+
+	// blocks is nil unless OpenVPN has a client-config-dir to enforce
+	// temporary blocks through.
+	blocks *access.Manager
+}
+
+// WithBlocking enables temporary blocking of users.
+func (s *Server) WithBlocking(m *access.Manager) *Server {
+	s.blocks = m
+	return s
 }
 
 // WithEnricher attaches an external identity source.
@@ -119,6 +130,9 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("GET /api/certificates/{common_name}/profile", s.handleDownloadProfile)
 	protected.HandleFunc("GET /api/stream", s.handleStream)
 	protected.HandleFunc("GET /api/enrichment", s.handleEnrichment)
+	protected.HandleFunc("GET /api/blocks", s.handleBlocks)
+	protected.HandleFunc("PUT /api/users/{common_name}/block", s.handleBlockUser)
+	protected.HandleFunc("DELETE /api/users/{common_name}/block", s.handleUnblockUser)
 
 	if s.store != nil {
 		protected.HandleFunc("GET /api/history/sessions", s.handleHistorySessions)

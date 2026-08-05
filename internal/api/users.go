@@ -47,6 +47,10 @@ type User struct {
 	// Identity is who this is according to an external system, when one is
 	// configured and recognises the common name.
 	Identity *enrich.Identity `json:"identity,omitempty"`
+
+	// Block is set while the user is barred from connecting. Distinct from a
+	// revoked certificate: this one lifts by itself.
+	Block *store.Block `json:"block,omitempty"`
 }
 
 // handleUsers returns every known user, online or not.
@@ -142,14 +146,38 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Blocks in force. Like notes, these attach only to users the other
+	// sources already know about.
+	if s.blocks != nil {
+		if active, err := s.blocks.Active(r.Context()); err != nil {
+			s.log.Warn("could not read blocks", "error", err)
+		} else {
+			for cn, b := range active {
+				if u, known := users[cn]; known {
+					blk := b
+					u.Block = &blk
+				}
+			}
+		}
+	}
+
 	out := make([]User, 0, len(users))
 	for _, u := range users {
 		out = append(out, *u)
 	}
 
-	// Online first, then by most recent activity, then by name so the order is
-	// stable when a user has no history at all.
+	// Blocked first, then online, then by most recent activity, then by name
+	// so the order is stable when a user has no history at all.
+	//
+	// A blocked user is offline precisely because they were blocked, so
+	// sorting on "online" alone buries the row an operator most wants to see -
+	// the administrative state they just put in place, or that is about to
+	// expire.
 	sort.Slice(out, func(i, j int) bool {
+		bi, bj := out[i].Block != nil, out[j].Block != nil
+		if bi != bj {
+			return bi
+		}
 		if out[i].Online != out[j].Online {
 			return out[i].Online
 		}

@@ -178,6 +178,33 @@ if [ -n "$OVPN_CONF" ]; then
 	fi
 fi
 
+# --- client-config-dir ---
+# Without it ovpnmon can kill a session, but the client reconnects a second
+# later. This is what makes a temporary block possible; a revocation is the
+# only alternative, and it does not expire.
+if [ -n "$OVPN_CONF" ]; then
+	CCD=$(grep -E '^\s*client-config-dir' "$OVPN_CONF" 2>/dev/null | head -1 | awk '{print $2}' | tr -d '"'"'"'')
+	if [ -n "$CCD" ]; then
+		case "$CCD" in
+			/*) CCD_PATH="$CCD" ;;
+			*)  CCD_PATH="$(dirname "$OVPN_CONF")/$CCD" ;;
+		esac
+		if [ -d "$CCD_PATH" ]; then
+			ok "client-config-dir" "$CCD_PATH"
+		else
+			warn "client-config-dir" "configured as $CCD_PATH but missing"
+			note "create it:  sudo mkdir -p $CCD_PATH"
+		fi
+	else
+		warn "client-config-dir" "absent: users can only be revoked, not blocked temporarily"
+		note "add to $OVPN_CONF:  client-config-dir /etc/openvpn/ccd"
+		note "then:  sudo mkdir -p /etc/openvpn/ccd"
+		note "optional - needed only for timed blocks from the dashboard"
+		CHANGES+=("client-config-dir /etc/openvpn/ccd")
+		RESTART_NEEDED=1
+	fi
+fi
+
 # ---------------------------------------------------------------- interface --
 
 section "Tunnel"

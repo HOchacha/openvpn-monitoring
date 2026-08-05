@@ -67,6 +67,17 @@ var sqliteSchema = []string{
 		note        TEXT    NOT NULL DEFAULT '',
 		updated_at  INTEGER NOT NULL
 	)`,
+
+	// Temporary blocks. The database is the authority on when a block ends -
+	// the file OpenVPN reads carries no expiry, so without this a block would
+	// outlive an ovpnmon that was stopped before it expired.
+	`CREATE TABLE IF NOT EXISTS user_blocks (
+		common_name TEXT    NOT NULL PRIMARY KEY,
+		until       INTEGER NOT NULL DEFAULT 0,
+		reason      TEXT    NOT NULL DEFAULT '',
+		created_by  TEXT    NOT NULL DEFAULT '',
+		created_at  INTEGER NOT NULL
+	)`,
 }
 
 var mysqlSchema = []string{
@@ -128,6 +139,15 @@ var mysqlSchema = []string{
 		common_name VARCHAR(191) NOT NULL,
 		note        TEXT         NOT NULL,
 		updated_at  BIGINT       NOT NULL,
+		PRIMARY KEY (common_name)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+	`CREATE TABLE IF NOT EXISTS user_blocks (
+		common_name VARCHAR(191) NOT NULL,
+		until       BIGINT       NOT NULL DEFAULT 0,
+		reason      VARCHAR(512) NOT NULL DEFAULT '',
+		created_by  VARCHAR(191) NOT NULL DEFAULT '',
+		created_at  BIGINT       NOT NULL,
 		PRIMARY KEY (common_name)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 }
