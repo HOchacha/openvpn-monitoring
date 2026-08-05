@@ -181,10 +181,17 @@ func (p *Provider) Refresh(ctx context.Context) error {
 	}
 	// A user carries only its domain's leaf name, and two subdomains can share
 	// one. The full path is what actually identifies a domain.
+	//
+	// Not fatal if it cannot be read: a deliberately narrow read-only account -
+	// which is what this integration asks for - may not be allowed to list
+	// domains, and losing every label over it would be a worse trade than
+	// falling back to the leaf name each user already carries.
 	domains, err := p.listDomains(ctx)
 	if err != nil {
-		p.fail(err)
-		return err
+		p.log.Warn("could not list CloudStack domains; qualifying names by their "+
+			"leaf domain instead, which cannot tell two subdomains of the same "+
+			"name apart", "error", err)
+		domains = nil
 	}
 	pathByDomainID := make(map[string]string, len(domains))
 	for _, d := range domains {

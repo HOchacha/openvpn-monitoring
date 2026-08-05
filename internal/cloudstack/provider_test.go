@@ -592,3 +592,38 @@ func TestAccountNameIsAlsoAnAlias(t *testing.T) {
 		}
 	}
 }
+
+// A narrow read-only account - the kind this integration asks for - may not be
+// allowed to list domains. Losing every label over it is a worse trade than
+// qualifying names by the leaf domain each user already carries.
+func TestRefreshSurvivesUnreadableDomains(t *testing.T) {
+	p := fakeCloudStack(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("command") {
+		case "listUsers":
+			_, _ = w.Write([]byte(sampleUsers))
+		case "listVirtualMachines":
+			_, _ = w.Write([]byte(sampleVMs))
+		case "listNetworks":
+			_, _ = w.Write([]byte(sampleNets))
+		case "listDomains":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"listdomainsresponse":{"errorcode":401,
+				"errortext":"Access denied"}}`))
+		}
+	})
+
+	if err := p.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh should tolerate an unreadable domain list: %v", err)
+	}
+
+	id, ok := p.LookupUser("alice")
+	if !ok {
+		t.Fatal("alice was lost when domains could not be listed")
+	}
+	if id.Domain != "ROOT" {
+		t.Errorf("domain = %q, want the leaf name the user record carries", id.Domain)
+	}
+	if st := p.Stats(); !st.Healthy || st.Users != 2 {
+		t.Errorf("view should be usable: %+v", st)
+	}
+}
