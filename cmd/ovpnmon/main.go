@@ -28,9 +28,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/ubuntu/openvpn-monitoring/internal/access"
 	"github.com/ubuntu/openvpn-monitoring/internal/api"
-	"github.com/ubuntu/openvpn-monitoring/internal/cloudstack"
 	"github.com/ubuntu/openvpn-monitoring/internal/collector"
 	"github.com/ubuntu/openvpn-monitoring/internal/enrich"
+	"github.com/ubuntu/openvpn-monitoring/internal/geoip"
 	"github.com/ubuntu/openvpn-monitoring/internal/metrics"
 	"github.com/ubuntu/openvpn-monitoring/internal/pki"
 	"github.com/ubuntu/openvpn-monitoring/internal/store"
@@ -119,11 +119,7 @@ func run() error {
 		metricsToken = flag.String("metrics-token", "", "bearer token letting Prometheus scrape /metrics without a login")
 		hashPassword = flag.String("hash-password", "", "print a bcrypt hash for the given password and exit")
 
-		csURL      = flag.String("cloudstack-url", "", "CloudStack API endpoint, e.g. http://cs:8080/client/api (empty disables the integration)")
-		csKey      = flag.String("cloudstack-api-key", "", "CloudStack API key")
-		csSecret   = flag.String("cloudstack-secret-key", "", "CloudStack secret key")
-		csRefresh  = flag.Duration("cloudstack-refresh", time.Minute, "how often to reload the CloudStack view")
-		csInsecure = flag.Bool("cloudstack-insecure", false, "skip TLS verification for the CloudStack endpoint")
+		geoipDB = flag.String("geoip-db", "", "MaxMind GeoLite2 .mmdb file, placing public destinations on the map (empty disables geolocation)")
 
 		ccdDir = flag.String("ccd-dir", "",
 			"OpenVPN's client-config-dir, enabling temporary blocking (auto-detected from the server config when empty)")
@@ -204,33 +200,24 @@ func run() error {
 		mgmtPassword = strings.TrimRight(string(raw), "\r\n")
 	}
 
-	// An identity source is optional. Without one the core has no idea
-	// CloudStack exists; with one, users and destinations gain a second
-	// dimension - who they are in the infrastructure, not just on the wire.
+	// An identity source is optional and pluggable. The core never depends on
+	// any particular one: enrich.Provider is the seam, and a deployment that
+	// configures no provider simply sees users and destinations as they appear
+	// on the wire. No provider ships in-tree; wire your own here.
 	var enricher enrich.Provider
-	if *csURL != "" {
-		p, err := cloudstack.NewProvider(cloudstack.Config{
-			URL:                *csURL,
-			APIKey:             *csKey,
-			SecretKey:          *csSecret,
-			InsecureSkipVerify: *csInsecure,
-		}, log)
-		if err != nil {
-			return fmt.Errorf("cloudstack: %w", err)
-		}
 
-		probe, cancel := context.WithTimeout(ctx, 15*time.Second)
-		err = p.Ping(probe)
-		cancel()
+	// Geolocation is optional and offline: with a GeoLite2 database, public
+	// destinations gain a country and city; without one they are reported
+	// exactly as observed.
+	var geo *geoip.DB
+	if *geoipDB != "" {
+		geo, err = geoip.Open(*geoipDB)
 		if err != nil {
-			// Not fatal: the VPN is still worth watching if CloudStack is
-			// unreachable, and the provider retries on its own schedule.
-			log.Warn("cloudstack unreachable; continuing without it", "error", err)
+			return err
 		}
-
-		go p.Run(ctx, *csRefresh)
-		enricher = p
-		log.Info("cloudstack integration enabled", "url", *csURL, "refresh", *csRefresh)
+		defer geo.Close()
+		epoch, dbType := geo.Metadata()
+		log.Info("geoip database loaded", "path", *geoipDB, "type", dbType, "build_epoch", epoch)
 	}
 
 	col, err := collector.New(collector.Config{
@@ -243,6 +230,7 @@ func run() error {
 		NameTTL:      *nameTTL,
 		Store:        hist,
 		Enricher:     enricher,
+		GeoIP:        geo,
 	}, log)
 	if err != nil {
 		if errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EPERM) {

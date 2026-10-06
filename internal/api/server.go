@@ -139,6 +139,7 @@ func (s *Server) Handler() http.Handler {
 		protected.HandleFunc("GET /api/history/destinations", s.handleHistoryDestinations)
 		protected.HandleFunc("GET /api/history/events", s.handleHistoryEvents)
 		protected.HandleFunc("GET /api/history/hosts", s.handleHistoryHosts)
+		protected.HandleFunc("GET /api/history/countries", s.handleHistoryCountries)
 		protected.HandleFunc("GET /api/history/stats", s.handleHistoryStats)
 	}
 	mux.Handle("/api/", s.guard(protected))
@@ -204,7 +205,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // handleEnrichment reports the state of the identity source, if any.
 //
-// Separate from /healthz on purpose: a stale CloudStack view degrades the
+// Separate from /healthz on purpose: a stale identity source degrades the
 // dashboard's labelling, but the VPN monitoring itself is unaffected, so it
 // must not make the service look unhealthy to a load balancer.
 func (s *Server) handleEnrichment(w http.ResponseWriter, r *http.Request) {

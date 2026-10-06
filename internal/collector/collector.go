@@ -24,6 +24,7 @@ import (
 
 	"github.com/ubuntu/openvpn-monitoring/internal/ebpfx"
 	"github.com/ubuntu/openvpn-monitoring/internal/enrich"
+	"github.com/ubuntu/openvpn-monitoring/internal/geoip"
 	"github.com/ubuntu/openvpn-monitoring/internal/mgmt"
 	"github.com/ubuntu/openvpn-monitoring/internal/resolver"
 	"github.com/ubuntu/openvpn-monitoring/internal/store"
@@ -48,6 +49,11 @@ type Config struct {
 	// Enricher, when set, names destinations in terms of the infrastructure
 	// they belong to. Nil means destinations are reported exactly as observed.
 	Enricher enrich.Provider
+
+	// GeoIP, when set, places public destination addresses on the map using a
+	// local MaxMind GeoLite2 database. Nil means destinations carry no
+	// geography.
+	GeoIP *geoip.DB
 }
 
 // Defaults fills in anything the caller left zero.
@@ -90,6 +96,10 @@ type Destination struct {
 	// Resource is what this address is in the operator's infrastructure,
 	// when an enrichment provider recognises it.
 	Resource *enrich.Resource `json:"resource,omitempty"`
+
+	// Geo is where this address is, when a GeoIP database is loaded and the
+	// address is public.
+	Geo *geoip.Location `json:"geo,omitempty"`
 
 	TxBytes     uint64    `json:"tx_bytes"`
 	RxBytes     uint64    `json:"rx_bytes"`
@@ -749,6 +759,7 @@ func (c *Collector) rebuild() {
 				Proto:       protoName(e.proto),
 				Service:     serviceName(e.proto, e.port),
 				Resource:    c.resourceFor(e.remoteIP),
+				Geo:         c.geoFor(e.remoteIP),
 				TxBytes:     e.tx,
 				RxBytes:     e.rx,
 				Packets:     e.packets,
@@ -776,6 +787,7 @@ func (c *Collector) rebuild() {
 			Port:        f.RemotePort,
 			Proto:       protoName(f.Proto),
 			Service:     serviceName(f.Proto, f.RemotePort),
+			Geo:         c.geoFor(f.RemoteIP),
 			TxBytes:     f.TxBytes,
 			RxBytes:     f.RxBytes,
 			Packets:     f.TxPackets + f.RxPackets,
@@ -906,6 +918,7 @@ func (c *Collector) applyFlowDeltas(flows []ebpfx.Flow) {
 				Proto:       protoName(f.Proto),
 				Hostname:    host,
 				NameSource:  string(src),
+				Country:     c.geoCountry(f.RemoteIP),
 				TxBytes:     d.tx,
 				RxBytes:     d.rx,
 				Packets:     d.packets,
@@ -1029,6 +1042,33 @@ func (c *Collector) resourceFor(addr netip.Addr) *enrich.Resource {
 		return &r
 	}
 	return nil
+}
+
+// geoFor places an address using the GeoIP database, if one is loaded. Like
+// resourceFor it is served from a local cache and called once per destination
+// on every scrape.
+func (c *Collector) geoFor(addr netip.Addr) *geoip.Location {
+	if c.cfg.GeoIP == nil {
+		return nil
+	}
+	if loc, ok := c.cfg.GeoIP.Lookup(addr); ok {
+		return &loc
+	}
+	return nil
+}
+
+// geoCountry returns the ISO country code for an address, or "" when there is
+// no GeoIP database or the address has no country. This is what history stores,
+// so a "where in the world" view can be built without keeping the whole
+// GeoIP database around at query time.
+func (c *Collector) geoCountry(addr netip.Addr) string {
+	if c.cfg.GeoIP == nil {
+		return ""
+	}
+	if loc, ok := c.cfg.GeoIP.Lookup(addr); ok {
+		return loc.CountryISO
+	}
+	return ""
 }
 
 // RecordAdminEvent notes an administrative action in the activity feed and

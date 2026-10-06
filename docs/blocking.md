@@ -1,118 +1,129 @@
-# 사용자 임시 차단
+# Temporarily blocking a user
 
-인증서를 폐기하지 않고 사용자의 접속을 한동안 막는 기능입니다. 이 문서는 **차단
-결정이 어디서 누구에 의해 내려지는지**와, 그 선택에서 따라 나오는 성질을 설명합니다.
+This feature keeps a user out for a while without revoking their certificate.
+This document explains **where and by whom the block decision is made**, and the
+properties that follow from that choice.
 
-사용법은 README의 「사용자 임시 차단」을, API는 `PUT`/`DELETE /api/users/{cn}/block`을
-보세요.
+For usage see "Temporarily blocking a user" in the README; for the API see
+`PUT`/`DELETE /api/users/{cn}/block`.
 
-## 왜 별도 기능인가
+## Why a separate feature
 
-기존에는 두 가지뿐이었습니다.
+Previously there were only two options.
 
-| | 지속 | 되돌리기 |
+| | Duration | Reversal |
 |---|---|---|
-| **연결 종료** (`client-kill`) | 약 1초 | 클라이언트가 알아서 재접속 |
-| **인증서 폐기** (CRL) | 영구 | CRL을 다시 구워야 함 |
+| **Disconnect** (`client-kill`) | ~1 second | client reconnects on its own |
+| **Certificate revocation** (CRL) | permanent | the CRL has to be rebuilt |
 
-"금요일까지 이 계정 막아둬" 같은 요구에는 폐기밖에 쓸 게 없는데, 폐기는 **키가 유출된
-경우를 위한 도구**입니다. OpenVPN 문서도 `--disable` 항목에서 같은 선을 긋습니다 —
-키 유출에는 CRL을 쓰고, 그 외에는 이걸 쓰라고 되어 있습니다.
+For a request like "keep this account out until Friday", revocation was the only
+tool available — but revocation is **a tool for a leaked key**. The OpenVPN
+documentation draws the same line under `--disable`: use the CRL for a key
+compromise, and use this for everything else.
 
-| | 수단 | 지속 | 되돌리기 | 인증서 |
+| | Mechanism | Duration | Reversal | Certificate |
 |---|---|---|---|---|
-| 연결 종료 | `client-kill` | 약 1초 | 자동 | 유효 |
-| **임시 차단** | ccd `disable` | 만료까지 | 파일 삭제 | **유효** |
-| 폐기 | CRL | 영구 | 어려움 | 무효 |
+| Disconnect | `client-kill` | ~1 second | automatic | valid |
+| **Temporary block** | ccd `disable` | until expiry | delete the file | **valid** |
+| Revocation | CRL | permanent | hard | invalid |
 
-## 세 개의 결정, 세 개의 주체
+## Three decisions, three actors
 
-차단은 하나의 결정처럼 보이지만 실제로는 셋입니다. 내리는 주체가 각각 다르고, 그게
-이 기능의 장애 특성을 결정합니다.
+A block looks like a single decision but is really three. Each is made by a
+different actor, and that is what determines this feature's failure
+characteristics.
 
-### 1. 정책 결정 — 운영자가, 한 번
+### 1. Policy decision — by the operator, once
 
-**자동 차단은 없습니다.** ovpnmon이 트래픽을 보고 스스로 누군가를 막는 경로는 존재하지
-않습니다. 모든 차단은 사람이 명시적으로 내린 결정이고, 누가·언제·왜 걸었는지가 DB와
-감사 이력에 남습니다.
+**There is no automatic blocking.** There is no path by which ovpnmon watches
+traffic and blocks someone on its own. Every block is an explicit human
+decision, and who set it, when, and why is recorded in the DB and the audit
+history.
 
 ```
-운영자 → Block → 기간·사유 입력 → PUT /api/users/{cn}/block
+operator → Block → enter duration and reason → PUT /api/users/{cn}/block
                                           │
         access.Manager.Block(cn, until, reason, by)
-             ├─ 1. ccd/<cn> 파일 작성   "disable"
-             ├─ 2. DB에 만료 시각 기록
-             └─ 3. 현재 세션 종료
+             ├─ 1. write ccd/<cn> file   "disable"
+             ├─ 2. record expiry time in the DB
+             └─ 3. end the current session
 ```
 
-**순서가 중요합니다.** 파일이 먼저고 종료가 나중입니다. 반대로 하면, 끊긴 클라이언트의
-자동 재시도(실측 1초)가 차단 파일보다 먼저 도착해서 그대로 다시 들어옵니다.
+**Order matters.** The file comes first, the disconnect second. Do it the other
+way around and the disconnected client's automatic retry (~1 second, measured)
+arrives before the block file and it simply gets back in.
 
-파일 작성은 성공했는데 DB 기록이 실패하면 파일을 되돌립니다. 강제되지만 기록되지 않은
-차단은 **만료될 방법이 없습니다**.
+If the file write succeeds but the DB record fails, the file is rolled back. A
+block that is enforced but not recorded **has no way to expire**.
 
-### 2. 집행 결정 — OpenVPN이, 접속할 때마다
+### 2. Enforcement decision — by OpenVPN, on every connection
 
-여기가 핵심입니다. **ovpnmon은 인증 경로에 없습니다.** 파일을 놓아둘 뿐이고, 거부
-판단은 OpenVPN이 접속 시점에 혼자 내립니다. `client-config-dir`는 접속마다 다시 읽히므로
-차단과 해제 모두 재시작이 필요 없습니다.
+This is the crux. **ovpnmon is not in the authentication path.** It only places
+a file; the refusal is decided by OpenVPN alone, at connection time. Because
+`client-config-dir` is re-read on every connection, neither blocking nor
+unblocking needs a restart.
 
-실제 거부 로그의 순서:
+The order in an actual refusal log:
 
 ```
-02:30:39  Control Channel: TLSv1.3 ... peer certificate: 256 bits   ← 인증서 검증 통과
-02:30:39  [server] Peer Connection Initiated                        ← 연결 성립
+02:30:39  Control Channel: TLSv1.3 ... peer certificate: 256 bits   ← certificate verified
+02:30:39  [server] Peer Connection Initiated                        ← connection established
 02:30:40  SENT CONTROL [server]: 'PUSH_REQUEST'
-02:30:40  AUTH: Received control message: AUTH_FAILED               ← 거부
+02:30:40  AUTH: Received control message: AUTH_FAILED               ← refused
 02:30:40  SIGTERM[soft,auth-failure] received, process exiting
 ```
 
-즉 **인증서 검증(+CRL) → CN 추출 → `ccd/<CN>` 조회 → `disable` → AUTH_FAILED** 입니다.
-폐기된 인증서는 더 앞단(CRL)에서 잘리고, 차단은 인증서가 유효해야 비로소 평가됩니다.
+So it is **certificate verification (+CRL) → extract CN → look up `ccd/<CN>` →
+`disable` → AUTH_FAILED**. A revoked certificate is cut earlier (at the CRL);
+a block is only evaluated once the certificate is valid.
 
-연결 종료와 결과가 다릅니다. 종료는 `SIGUSR1[soft,server-pushed-connection-reset]`이라
-클라이언트가 1초 뒤 돌아오지만, 차단은 `AUTH_FAILED`라 **클라이언트 프로세스가
-종료됩니다**. 그래서 차단이 풀린 뒤에도 스스로 돌아오지 않고 사용자가 다시 연결해야
-합니다(`auth-retry` 설정이 있으면 다르게 동작합니다).
+The outcome differs from a disconnect. A disconnect is
+`SIGUSR1[soft,server-pushed-connection-reset]`, so the client comes back a
+second later, whereas a block is `AUTH_FAILED`, so **the client process exits**.
+That is why, even after a block is lifted, it does not come back on its own and
+the user has to reconnect (behavior differs if `auth-retry` is configured).
 
-#### 관리 인터페이스의 `client-deny`를 쓰지 않은 이유
+#### Why not the management interface's `client-deny`
 
-관리 인터페이스에도 거부 명령이 있지만, 그걸 쓰려면 `management-client-auth`가
-필요합니다. 그러면 **모든 인증이 ovpnmon을 거칩니다** — ovpnmon이 죽는 순간 아무도
-접속하지 못합니다. 모니터링 도구에 VPN 가용성을 묶는 건 받아들일 수 없어서 뺐습니다.
+The management interface has a deny command too, but using it requires
+`management-client-auth`. That would route **all authentication through
+ovpnmon** — the moment ovpnmon dies, nobody can connect. Tying VPN availability
+to a monitoring tool is unacceptable, so it was left out.
 
-지금 구조에서는 ovpnmon이 죽어도 OpenVPN은 평소대로 동작합니다.
+In the current design, even if ovpnmon dies, OpenVPN keeps working as usual.
 
-### 3. 해제 결정 — 대조 루프가, 15초마다
+### 3. Lift decision — by the reconcile loop, every 15 seconds
 
-만료를 파일이 강제할 수단은 없습니다. 주석에 시각을 적어두지만 OpenVPN은 그걸 읽지
-않습니다. **DB가 만료의 유일한 주인**이고, 별도 루프가 DB와 디렉터리를 대조합니다.
+Nothing lets the file enforce its own expiry. The time is written in a comment,
+but OpenVPN does not read it. **The DB is the sole owner of expiry**, and a
+separate loop reconciles the DB against the directory.
 
-`Run()`은 티커를 돌리기 전에 대조를 **먼저 한 번** 실행합니다. ovpnmon을 다시 시작하면
-그 즉시 밀린 만료가 정리됩니다.
+`Run()` performs a reconcile **once first** before starting the ticker. So
+restarting ovpnmon immediately clears any overdue expiries.
 
-대조가 바로잡는 세 가지:
+The three things reconcile fixes:
 
-| 상황 | 처리 | 이게 없으면 |
+| Situation | Handling | Without it |
 |---|---|---|
-| 만료됐는데 파일이 남음 | 파일·레코드 삭제 | 임시 차단이 영구가 됨 |
-| 기록은 있는데 파일이 없음 | 파일 재작성 | 대시보드만 차단이라고 주장 |
-| 파일은 있는데 기록이 없음 | 파일 삭제 | 기록 전에 죽으면 영구 차단 |
+| Expired but file remains | delete file and record | a temporary block becomes permanent |
+| Record exists but no file | rewrite the file | only the dashboard claims a block |
+| File exists but no record | delete the file | dying before recording means a permanent block |
 
-주기(`block-check`, 기본 15초)가 **차단이 늦게 풀릴 수 있는 최대 시간**입니다.
+The interval (`block-check`, default 15 seconds) is **the maximum a block can be
+late to lift**.
 
 ```
 02:30:38  user blocked  until=02:32:08  by=admin  sessions_ended=1
 02:32:08  block expired  common_name=boan
 ```
 
-## 남의 파일은 건드리지 않습니다
+## It never touches someone else's file
 
-`client-config-dir`에는 고정 IP 할당(`ifconfig-push`)이나 클라이언트별 라우트 같은
-정당한 설정이 들어있을 수 있습니다. 임시 차단 하나 걸자고 운영자의 설정을 지우는 건
-받아들일 수 없는 교환입니다.
+`client-config-dir` may hold legitimate settings such as a fixed-IP assignment
+(`ifconfig-push`) or per-client routes. Wiping the operator's config just to set
+one temporary block is an unacceptable trade.
 
-그래서 ovpnmon이 쓴 파일은 첫 줄에 마커를 남깁니다:
+So the file ovpnmon writes carries a marker on its first line:
 
 ```
 # ovpnmon-block
@@ -124,69 +135,78 @@
 disable
 ```
 
-마커가 없는 파일은 **읽지도 지우지도 덮어쓰지도 않고** 거부합니다. 그 사용자를 막으려면
-해당 파일에 `disable`을 직접 추가하라는 오류가 나갑니다.
+A file without the marker is refused — **not read, not deleted, not
+overwritten**. To block that user, the error tells you to add `disable` to that
+file by hand.
 
-사유 문자열은 개행을 제거해 한 줄로 만듭니다. OpenVPN이 파싱하는 파일이라, 사유에
-`push "redirect-gateway def1"` 같은 걸 넣으면 그게 지시어가 됩니다.
+The reason string has newlines stripped so it is a single line. Because OpenVPN
+parses this file, putting something like `push "redirect-gateway def1"` in the
+reason would turn it into a directive.
 
-파일은 임시 파일에 쓴 뒤 rename으로 넣습니다. 접속마다 읽히는 디렉터리라 반쯤 쓰인
-파일은 그 순간 설정 오류가 됩니다. 권한은 0644 — OpenVPN이 `nobody`로 권한을 낮추므로
-읽을 수 있어야 합니다.
+The file is written to a temp file and moved into place with rename. In a
+directory read on every connection, a half-written file would be a config error
+at that instant. The permission is 0644 — OpenVPN drops privileges to `nobody`,
+so it must remain readable.
 
-## 손으로 푸는 방법
+## How to unblock by hand
 
-파일을 지우면 OpenVPN은 다음 접속부터 통과시킵니다. 다만 **ovpnmon이 돌고 있고 차단이
-만료 전이면 15초 안에 다시 만들어 놓습니다**(위 표의 두 번째 줄). 손으로 지우는 게
-통하는 건 두 경우뿐입니다.
+Deleting the file makes OpenVPN let the user through from the next connection.
+But **if ovpnmon is running and the block has not yet expired, it re-creates the
+file within 15 seconds** (the second row of the table above). Deleting by hand
+works only in two cases.
 
-- ovpnmon이 멈춰 있을 때
-- 차단이 이미 만료됐을 때
+- while ovpnmon is stopped
+- when the block has already expired
 
-ovpnmon이 살아 있는 동안 정상적으로 푸는 방법은 대시보드의 **Unblock** 또는
-`DELETE /api/users/{cn}/block`입니다. ovpnmon 없이 급히 풀어야 한다면:
+The normal way to lift a block while ovpnmon is alive is the dashboard's
+**Unblock** or `DELETE /api/users/{cn}/block`. If you must lift it urgently
+without ovpnmon:
 
 ```bash
 sudo systemctl stop ovpnmon
 sudo rm /etc/openvpn/ccd/<common-name>
-# OpenVPN 재시작 불필요 — 다음 접속부터 통과합니다
+# no OpenVPN restart needed — the next connection passes
 ```
 
-이 경우 DB에는 차단 기록이 남으므로, ovpnmon을 다시 켜면 만료 전이라면 **다시
-강제됩니다**. 완전히 풀려면 ovpnmon을 켠 뒤 대시보드에서 해제하세요.
+In this case the block record remains in the DB, so if you start ovpnmon again
+before expiry it **is re-enforced**. To lift it completely, start ovpnmon and
+lift it from the dashboard.
 
-## 장애 상황별 동작
+## Behavior per failure scenario
 
-| 상황 | 결과 |
+| Situation | Result |
 |---|---|
-| ovpnmon 정지 | 걸린 차단은 **유효**(파일이 남음), 대신 **만료되지 않음**. 새 차단·해제 불가 |
-| ovpnmon 재시작 | 시작 즉시 대조 → 밀린 만료가 한꺼번에 정리됨 |
-| OpenVPN 재시작 | 차단 유지 (파일 기반이라 무관) |
-| 이력 DB 초기화 | 다음 대조에서 고아 파일로 판단 → **전부 해제** |
-| ccd 파일 손실 | 다음 대조에서 **재작성** |
-| ovpnmon이 죽어도 | OpenVPN은 평소대로 동작 — 인증 경로에 없음 |
+| ovpnmon stopped | existing blocks stay **enforced** (the file remains), but **do not expire**. No new blocks or lifts |
+| ovpnmon restarted | reconcile at startup → overdue expiries cleared all at once |
+| OpenVPN restarted | blocks persist (file-based, so unaffected) |
+| history DB reset | judged as orphan files at the next reconcile → **all lifted** |
+| ccd file lost | **rewritten** at the next reconcile |
+| ovpnmon dies | OpenVPN keeps working as usual — it is not in the auth path |
 
-첫 줄이 이 설계의 대가입니다. 1시간 차단을 걸고 ovpnmon을 일주일 세우면 일주일간
-차단됩니다. 만료를 판단할 주체가 ovpnmon뿐이기 때문이고, 위의 「손으로 푸는 방법」이
-그 경우의 탈출구입니다.
+The first row is the price of this design. Set a 1-hour block and leave ovpnmon
+down for a week, and the user is blocked for a week. That is because ovpnmon is
+the only actor that can decide expiry, and "How to unblock by hand" above is the
+escape hatch for that case.
 
-## 필요 조건
+## Requirements
 
-- `server.conf`에 `client-config-dir` (없으면 기능 자체가 꺼집니다)
-- 이력 활성화 (`store`) — 만료 시각이 DB에 있어야 합니다
-- 그 디렉터리에 대한 쓰기 권한 (`ReadWritePaths=-/etc/openvpn`)
+- `client-config-dir` in `server.conf` (without it the feature is off entirely)
+- History enabled (`store`) — the expiry time must live in the DB
+- Write permission for that directory (`ReadWritePaths=-/etc/openvpn`)
 
-`ccd-dir`를 비워두면 `server-conf`에서 자동으로 찾습니다. 두 값이 어긋나면 ovpnmon이
-쓰는 디렉터리를 OpenVPN이 읽지 않게 되어 **차단이 조용히 무효가 되므로**, 직접 지정하지
-않는 쪽을 권합니다.
+If you leave `ccd-dir` empty it is auto-detected from `server-conf`. If the two
+disagree, OpenVPN would not read the directory ovpnmon writes and **blocks would
+silently become void**, so the recommendation is not to set it by hand.
 
-`client-config-dir`를 새로 추가하려면 OpenVPN 재시작이 필요하고, 이때 전 클라이언트가
-끊깁니다. 한 번만 치르면 되고 이후 차단·해제에는 재시작이 없습니다. `preflight.sh`가
-설정 여부를 확인해 줍니다.
+Adding a new `client-config-dir` requires an OpenVPN restart, and that
+disconnects all clients. You pay it once; there is no restart for blocks or lifts
+afterward. `preflight.sh` checks whether it is configured.
 
-## 한계
+## Limitations
 
-- **만료는 ovpnmon에 의존합니다.** 위 장애 표의 첫 줄.
-- **해제가 최대 `block-check`만큼 늦습니다.** 기본 15초.
-- **차단은 다음 접속을 막습니다.** 이미 연결된 세션은 종료 단계가 따로 끊습니다.
-- **MySQL 백엔드는 미검증입니다.** 스키마는 양쪽으로 작성했지만 SQLite로만 확인했습니다.
+- **Expiry depends on ovpnmon.** The first row of the failure table above.
+- **Lifting can be up to `block-check` late.** Default 15 seconds.
+- **A block stops the next connection.** An already-connected session is dropped
+  by the separate disconnect step.
+- **The MySQL backend is unverified.** The schema is written for both, but only
+  SQLite has been checked.

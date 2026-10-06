@@ -162,33 +162,6 @@ static __always_inline int in_vpn_net(__u32 addr_be)
 	return (bpf_ntohl(addr_be) & vpn_mask) == vpn_net;
 }
 
-/* tun devices are L3 (no Ethernet header) but the same program should still
- * work if it is ever attached to a tap/veth. Detect it from the first nibble
- * instead of assuming. Returns the L3 offset, or -1 if this is not IPv4. */
-static __always_inline int l3_offset(struct __sk_buff *skb)
-{
-	__u8 first;
-
-	if (bpf_skb_load_bytes(skb, 0, &first, sizeof(first)) < 0)
-		return -1;
-	if ((first >> 4) == 4)
-		return 0;
-
-	__u16 h_proto;
-	if (bpf_skb_load_bytes(skb, offsetof(struct ethhdr, h_proto), &h_proto,
-			       sizeof(h_proto)) < 0)
-		return -1;
-	if (h_proto != bpf_htons(ETH_P_IP))
-		return -1;
-
-	if (bpf_skb_load_bytes(skb, ETH_HLEN, &first, sizeof(first)) < 0)
-		return -1;
-	if ((first >> 4) != 4)
-		return -1;
-
-	return ETH_HLEN;
-}
-
 static __always_inline __u32 lookup_client_id(__u32 client_ip)
 {
 	struct session_info *si = bpf_map_lookup_elem(&sessions, &client_ip);
@@ -196,14 +169,24 @@ static __always_inline __u32 lookup_client_id(__u32 client_ip)
 	return si ? si->client_id : 0;
 }
 
-static __always_inline void account(struct flow_key *key, __u32 len,
-				    int egress, int is_syn, __u32 client_id)
+/* Accumulate one packet into its flow and return the flow's OpenVPN client id.
+ *
+ * The session-map lookup is the expensive part, so it is done lazily. It runs
+ * only when a flow is first created, or when an existing flow was never tagged
+ * (the session map had no entry for this client when the flow began). Every
+ * packet of an established, already-tagged flow - which is all of a bulk
+ * transfer - pays no lookup and just returns the cached id.
+ *
+ * The byte counts stay exact; nothing here is sampled. */
+static __always_inline __u32 account(struct flow_key *key, __u32 len,
+				     int egress, int is_syn)
 {
 	__u64 now = bpf_ktime_get_ns();
 	struct flow_stat *st = bpf_map_lookup_elem(&flows, key);
 
 	if (!st) {
 		struct flow_stat init = {};
+		__u32 client_id = lookup_client_id(key->client_ip);
 
 		init.first_ns  = now;
 		init.last_ns   = now;
@@ -217,7 +200,7 @@ static __always_inline void account(struct flow_key *key, __u32 len,
 			init.connections = is_syn ? 1 : 0;
 		}
 		bpf_map_update_elem(&flows, key, &init, BPF_ANY);
-		return;
+		return client_id;
 	}
 
 	if (egress) {
@@ -230,8 +213,17 @@ static __always_inline void account(struct flow_key *key, __u32 len,
 			__sync_fetch_and_add(&st->connections, 1);
 	}
 	st->last_ns = now;
-	if (client_id && !st->client_id)
+
+	if (st->client_id)
+		return st->client_id;
+
+	/* Never tagged: the session map was empty when this flow began. Try
+	 * once more now and back-fill, so a client that connected after its
+	 * first packet still gets attributed. */
+	__u32 client_id = lookup_client_id(key->client_ip);
+	if (client_id)
 		st->client_id = client_id;
+	return client_id;
 }
 
 /* Copy up to PAYLOAD_SNAP bytes of L4 payload into a ring buffer event. */
@@ -317,19 +309,48 @@ static __always_inline int handle(struct __sk_buff *skb, int egress)
 {
 	bump(ST_PACKETS);
 
-	int off = l3_offset(skb);
+	/* Direct packet access: read the headers straight from the linear
+	 * buffer with verifier-checked bounds, rather than copying each one in
+	 * with a bpf_skb_load_bytes helper call. On a tun device the headers
+	 * are contiguous, so this is the common fast path; a packet whose header
+	 * is not directly available is skipped exactly as the old copy-failure
+	 * path skipped it. */
+	void *data     = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
 
-	if (off < 0) {
+	if (data + 1 > data_end) {
 		bump(ST_NOT_IPV4);
 		return TCX_NEXT;
 	}
 
-	struct iphdr iph;
+	/* tun is L3 (no Ethernet header); tap/veth are L2. Tell them apart from
+	 * the first nibble instead of assuming. */
+	__u32 off;
 
-	if (bpf_skb_load_bytes(skb, off, &iph, sizeof(iph)) < 0)
+	if ((*(__u8 *)data >> 4) == 4) {
+		off = 0;
+	} else {
+		struct ethhdr *eth = data;
+
+		if ((void *)(eth + 1) > data_end ||
+		    eth->h_proto != bpf_htons(ETH_P_IP)) {
+			bump(ST_NOT_IPV4);
+			return TCX_NEXT;
+		}
+		if (data + ETH_HLEN + 1 > data_end ||
+		    (*(__u8 *)(data + ETH_HLEN) >> 4) != 4) {
+			bump(ST_NOT_IPV4);
+			return TCX_NEXT;
+		}
+		off = ETH_HLEN;
+	}
+
+	struct iphdr *iph = data + off;
+
+	if ((void *)(iph + 1) > data_end)
 		return TCX_NEXT;
 
-	__u32 ihl = iph.ihl * 4;
+	__u32 ihl = iph->ihl * 4;
 
 	if (ihl < sizeof(struct iphdr))
 		return TCX_NEXT;
@@ -340,51 +361,51 @@ static __always_inline int handle(struct __sk_buff *skb, int egress)
 	/* On ingress the client is the source; on egress it is the destination.
 	 * Anything that is not a VPN client on the expected side is not ours. */
 	if (egress) {
-		if (!in_vpn_net(iph.daddr)) {
+		if (!in_vpn_net(iph->daddr)) {
 			bump(ST_NOT_VPN);
 			return TCX_NEXT;
 		}
-		key.client_ip = iph.daddr;
-		key.remote_ip = iph.saddr;
+		key.client_ip = iph->daddr;
+		key.remote_ip = iph->saddr;
 	} else {
-		if (!in_vpn_net(iph.saddr)) {
+		if (!in_vpn_net(iph->saddr)) {
 			bump(ST_NOT_VPN);
 			return TCX_NEXT;
 		}
-		key.client_ip = iph.saddr;
-		key.remote_ip = iph.daddr;
+		key.client_ip = iph->saddr;
+		key.remote_ip = iph->daddr;
 	}
-	key.proto = iph.protocol;
+	key.proto = iph->protocol;
 
 	__u32 l4_off = off + ihl;
 	__u32 payload_off = 0;
 	int is_syn = 0;
-	int is_frag = (iph.frag_off & bpf_htons(0x1fff)) != 0;
+	int is_frag = (iph->frag_off & bpf_htons(0x1fff)) != 0;
 
-	if (iph.protocol == IPPROTO_TCP && !is_frag) {
-		struct tcphdr th;
+	if (iph->protocol == IPPROTO_TCP && !is_frag) {
+		struct tcphdr *th = data + l4_off;
 
-		if (bpf_skb_load_bytes(skb, l4_off, &th, sizeof(th)) < 0)
+		if ((void *)(th + 1) > data_end)
 			return TCX_NEXT;
 
-		key.remote_port = bpf_ntohs(egress ? th.source : th.dest);
-		client_port     = bpf_ntohs(egress ? th.dest : th.source);
-		payload_off     = l4_off + th.doff * 4;
-		is_syn          = th.syn && !th.ack;
-	} else if (iph.protocol == IPPROTO_UDP && !is_frag) {
-		struct udphdr uh;
+		key.remote_port = bpf_ntohs(egress ? th->source : th->dest);
+		client_port     = bpf_ntohs(egress ? th->dest : th->source);
+		payload_off     = l4_off + th->doff * 4;
+		is_syn          = th->syn && !th->ack;
+	} else if (iph->protocol == IPPROTO_UDP && !is_frag) {
+		struct udphdr *uh = data + l4_off;
 
-		if (bpf_skb_load_bytes(skb, l4_off, &uh, sizeof(uh)) < 0)
+		if ((void *)(uh + 1) > data_end)
 			return TCX_NEXT;
 
-		key.remote_port = bpf_ntohs(egress ? uh.source : uh.dest);
-		client_port     = bpf_ntohs(egress ? uh.dest : uh.source);
+		key.remote_port = bpf_ntohs(egress ? uh->source : uh->dest);
+		client_port     = bpf_ntohs(egress ? uh->dest : uh->source);
 		payload_off     = l4_off + sizeof(struct udphdr);
 	}
 
-	__u32 client_id = lookup_client_id(key.client_ip);
-
-	account(&key, skb->len, egress, is_syn, client_id);
+	/* account() tags the flow with its client id lazily and hands it back,
+	 * so the bulk path here does no session lookup of its own. */
+	__u32 client_id = account(&key, skb->len, egress, is_syn);
 
 	if (is_frag)
 		return TCX_NEXT;
@@ -392,14 +413,14 @@ static __always_inline int handle(struct __sk_buff *skb, int egress)
 	/* Identify the destination in human terms, cheaply. */
 	if (egress) {
 		/* DNS replies name the addresses everything else will use. */
-		if (iph.protocol == IPPROTO_UDP && key.remote_port == 53)
+		if (iph->protocol == IPPROTO_UDP && key.remote_port == 53)
 			emit_payload(skb, EV_DNS, payload_off, &key,
 				     client_port, client_id);
 	} else {
 		if (is_syn)
 			emit_connect(&key, client_port, client_id);
 
-		if (iph.protocol == IPPROTO_TCP && payload_off < skb->len) {
+		if (iph->protocol == IPPROTO_TCP && payload_off < skb->len) {
 			__u8 probe[6];
 
 			if (bpf_skb_load_bytes(skb, payload_off, probe,

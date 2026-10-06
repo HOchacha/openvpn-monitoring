@@ -313,6 +313,55 @@ func TestTopHosts(t *testing.T) {
 	}
 }
 
+func TestTopCountries(t *testing.T) {
+	s := newTestStore(t, 0)
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Second)
+
+	id, _ := s.StartSession(ctx, Session{
+		CommonName: "alice", VirtualIP: "10.8.0.2",
+		RealAddress: "x", ConnectedAt: now,
+	})
+	s.RecordDestinations([]Destination{
+		{SessionID: id, RemoteIP: "1.1.1.1", Port: 443, Proto: "tcp",
+			Hostname: "a.us", Country: "US", TxBytes: 100, RxBytes: 900,
+			Connections: 1, FirstSeen: now, LastSeen: now},
+		{SessionID: id, RemoteIP: "2.2.2.2", Port: 443, Proto: "tcp",
+			Hostname: "b.us", Country: "US", TxBytes: 10, RxBytes: 90,
+			Connections: 1, FirstSeen: now, LastSeen: now},
+		{SessionID: id, RemoteIP: "3.3.3.3", Port: 443, Proto: "tcp",
+			Hostname: "c.de", Country: "DE", TxBytes: 5, RxBytes: 5,
+			Connections: 1, FirstSeen: now, LastSeen: now},
+		// A private destination with no country must not form a blank bucket.
+		{SessionID: id, RemoteIP: "10.0.0.9", Port: 22, Proto: "tcp",
+			Hostname: "", Country: "", TxBytes: 3, RxBytes: 3,
+			FirstSeen: now, LastSeen: now},
+	})
+	drain(t, s)
+
+	rows, err := s.TopCountries(ctx, Filter{})
+	if err != nil {
+		t.Fatalf("TopCountries: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d countries, want 2 (blank excluded)", len(rows))
+	}
+
+	top := rows[0]
+	if top.Country != "US" {
+		t.Errorf("busiest country is %q, want US", top.Country)
+	}
+	if top.Hosts != 2 {
+		t.Errorf("US spans %d hosts, want 2", top.Hosts)
+	}
+	if top.TxBytes != 110 || top.RxBytes != 990 {
+		t.Errorf("US bytes are %d/%d, want 110/990", top.TxBytes, top.RxBytes)
+	}
+	if rows[1].Country != "DE" {
+		t.Errorf("second country is %q, want DE", rows[1].Country)
+	}
+}
+
 func TestCloseOrphanedSessions(t *testing.T) {
 	s := newTestStore(t, 0)
 	ctx := context.Background()

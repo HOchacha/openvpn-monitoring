@@ -1,10 +1,11 @@
 // Package enrich defines what an optional identity source can add to what
 // ovpnmon observes on its own.
 //
-// The core knows this interface and nothing else. It does not know CloudStack
-// exists; a provider is registered only when one is configured, and when none
-// is, every call site simply sees no extra information. That is what keeps
-// "plugin" from meaning "the core grew a dependency".
+// The core knows this interface and nothing else. It does not know about any
+// particular system; a provider is registered only when one is configured, and
+// when none is, every call site simply sees no extra information. That is what
+// keeps "plugin" from meaning "the core grew a dependency". No provider ships
+// in this repository - the interface is the extension point for your own.
 package enrich
 
 import (

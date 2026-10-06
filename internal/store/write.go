@@ -227,7 +227,7 @@ func (s *Store) commit(ctx context.Context, events []Event, dests []Destination)
 		for _, d := range dests {
 			if _, err := stmt.ExecContext(ctx,
 				d.SessionID, d.RemoteIP, d.Port, d.Proto, d.Hostname, d.NameSource,
-				d.TxBytes, d.RxBytes, d.Packets, d.Connections,
+				d.Country, d.TxBytes, d.RxBytes, d.Packets, d.Connections,
 				d.FirstSeen.Unix(), d.LastSeen.Unix(),
 			); err != nil {
 				// A destination whose session row is gone (pruned by

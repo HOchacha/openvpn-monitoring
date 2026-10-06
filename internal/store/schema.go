@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // The two dialects differ enough in column types and index rules that spelling
@@ -32,6 +33,7 @@ var sqliteSchema = []string{
 		proto        TEXT    NOT NULL,
 		hostname     TEXT    NOT NULL DEFAULT '',
 		name_source  TEXT    NOT NULL DEFAULT '',
+		country      TEXT    NOT NULL DEFAULT '',
 		tx_bytes     INTEGER NOT NULL DEFAULT 0,
 		rx_bytes     INTEGER NOT NULL DEFAULT 0,
 		packets      INTEGER NOT NULL DEFAULT 0,
@@ -105,6 +107,7 @@ var mysqlSchema = []string{
 		proto        VARCHAR(8)   NOT NULL,
 		hostname     VARCHAR(255) NOT NULL DEFAULT '',
 		name_source  VARCHAR(8)   NOT NULL DEFAULT '',
+		country      VARCHAR(8)   NOT NULL DEFAULT '',
 		tx_bytes     BIGINT UNSIGNED NOT NULL DEFAULT 0,
 		rx_bytes     BIGINT UNSIGNED NOT NULL DEFAULT 0,
 		packets      BIGINT UNSIGNED NOT NULL DEFAULT 0,
@@ -162,7 +165,35 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("applying schema: %w\nstatement: %s", err, stmt)
 		}
 	}
+
+	// Additive column migrations for databases created before the column
+	// existed. A fresh install already has it from CREATE TABLE above; here it
+	// is added to an older table. Re-running is harmless: a duplicate-column
+	// error just means it is already present.
+	colType := "TEXT"
+	if s.dialect == MySQL {
+		colType = "VARCHAR(8)"
+	}
+	alters := []string{
+		fmt.Sprintf(`ALTER TABLE destinations ADD COLUMN country %s NOT NULL DEFAULT ''`, colType),
+	}
+	for _, alter := range alters {
+		if _, err := s.db.ExecContext(ctx, alter); err != nil {
+			if isDuplicateColumn(err) {
+				continue
+			}
+			return fmt.Errorf("applying migration: %w\nstatement: %s", err, alter)
+		}
+	}
 	return nil
+}
+
+// isDuplicateColumn reports whether an ALTER TABLE ADD COLUMN failed only
+// because the column is already there. SQLite says "duplicate column name",
+// MySQL says "Duplicate column name" (error 1060); both are safe to ignore
+// when a migration is re-run against an already-current database.
+func isDuplicateColumn(err error) bool {
+	return strings.Contains(strings.ToLower(err.Error()), "duplicate column")
 }
 
 // upsertDestinationSQL returns the dialect's flavour of "insert or accumulate".
@@ -178,14 +209,15 @@ func (s *Store) migrate(ctx context.Context) error {
 // one, so a later flow with no SNI does not erase an earlier identification.
 func (s *Store) upsertDestinationSQL() string {
 	const cols = `INSERT INTO destinations
-		(session_id, remote_ip, port, proto, hostname, name_source,
+		(session_id, remote_ip, port, proto, hostname, name_source, country,
 		 tx_bytes, rx_bytes, packets, connections, first_seen, last_seen)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) `
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) `
 
 	if s.dialect == MySQL {
 		return cols + `ON DUPLICATE KEY UPDATE
 			hostname    = IF(VALUES(hostname) <> '', VALUES(hostname), hostname),
 			name_source = IF(VALUES(hostname) <> '', VALUES(name_source), name_source),
+			country     = IF(VALUES(country) <> '', VALUES(country), country),
 			tx_bytes    = tx_bytes    + VALUES(tx_bytes),
 			rx_bytes    = rx_bytes    + VALUES(rx_bytes),
 			packets     = packets     + VALUES(packets),
@@ -197,6 +229,7 @@ func (s *Store) upsertDestinationSQL() string {
 	return cols + `ON CONFLICT (session_id, remote_ip, port, proto) DO UPDATE SET
 		hostname    = CASE WHEN excluded.hostname <> '' THEN excluded.hostname ELSE destinations.hostname END,
 		name_source = CASE WHEN excluded.hostname <> '' THEN excluded.name_source ELSE destinations.name_source END,
+		country     = CASE WHEN excluded.country <> '' THEN excluded.country ELSE destinations.country END,
 		tx_bytes    = destinations.tx_bytes    + excluded.tx_bytes,
 		rx_bytes    = destinations.rx_bytes    + excluded.rx_bytes,
 		packets     = destinations.packets     + excluded.packets,

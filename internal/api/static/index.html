@@ -21,8 +21,11 @@
     --down: #7c3aed;
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   }
+  /* Dark palette, defined once and applied in three situations: the viewer's
+     OS is dark and they have not overridden it, or they explicitly chose dark.
+     The light palette above is the default and what [data-theme="light"] forces. */
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
       --bg: #0e1013;
       --panel: #16191e;
       --panel-2: #1b1f25;
@@ -36,6 +39,20 @@
       --up: #60a5fa;
       --down: #c084fc;
     }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e1013;
+    --panel: #16191e;
+    --panel-2: #1b1f25;
+    --border: #282d35;
+    --text: #e8eaed;
+    --muted: #9aa1ac;
+    --accent: #60a5fa;
+    --good: #4ade80;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --up: #60a5fa;
+    --down: #c084fc;
   }
 
   * { box-sizing: border-box; }
@@ -126,6 +143,7 @@
   td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
   td.host { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ip { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .geo { font-size: 12.5px; white-space: nowrap; color: var(--muted); }
   .tag {
     display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px;
     background: var(--panel-2); border: 1px solid var(--border); color: var(--muted);
@@ -136,6 +154,20 @@
   .tag.http { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, var(--border)); }
 
   .scroll { max-height: 460px; overflow: auto; }
+
+  /* Readability polish: dense tables and session rows are easier to track with
+     a hover highlight, and the stat cards get a quiet affordance. Structure and
+     spacing are unchanged — this only sharpens how the data reads. */
+  tbody tr { transition: background 0.08s ease; }
+  tbody tr:hover td { background: var(--panel-2); }
+  .session > summary { transition: background 0.08s ease; }
+  .session > summary:hover { background: var(--panel-2); }
+  .stat { transition: border-color 0.1s ease; }
+  .stat:hover { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+  .stat .value.up { color: var(--up); }
+  .stat .value.down { color: var(--down); }
+  .geo .flag { font-size: 14px; margin-right: 3px; vertical-align: -1px; }
+  td.host .res { font-weight: 600; }
 
   #feed {
     background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
@@ -328,7 +360,7 @@
   .modal .err { color: var(--bad); font-size: 12.5px; margin-right: auto; align-self: center; }
 
   /* Header status for the identity source. "addresses 0" is the difference
-     between a broken integration and an empty CloudStack. */
+     between a broken integration and an empty identity source. */
   .pill.enrich { font-family: var(--mono); font-size: 11.5px; }
   .pill.enrich .bad-val { color: var(--bad); }
 
@@ -390,8 +422,26 @@
   }
   #logoutBtn:hover { color: var(--text); }
 
+  #themeBtn {
+    font: inherit; font-size: 14px; line-height: 1; padding: 4px 8px; cursor: pointer;
+    background: var(--panel-2); color: var(--muted);
+    border: 1px solid var(--border); border-radius: 7px;
+  }
+  #themeBtn:hover { border-color: var(--accent); }
+
   .hidden { display: none; }
 </style>
+<script>
+  // Apply the saved theme before the first paint, so a viewer who chose light
+  // or dark never sees the other one flash first. "system" (or nothing saved)
+  // leaves the attribute off and lets prefers-color-scheme decide.
+  try {
+    var t = localStorage.getItem("ovpnmon-theme");
+    if (t === "light" || t === "dark") {
+      document.documentElement.setAttribute("data-theme", t);
+    }
+  } catch (e) { /* private mode: fall back to system */ }
+</script>
 </head>
 <body>
 
@@ -424,6 +474,7 @@
     </select>
     <button id="refreshBtn" title="Refresh now">↻</button>
   </div>
+  <button id="themeBtn" title="Theme: follows your system" aria-label="Toggle theme">🖥</button>
   <span class="pill" id="updated">—</span>
   <button id="logoutBtn" class="hidden">Sign out</button>
 </header>
@@ -470,6 +521,7 @@
           </select>
           <select name="mode">
             <option value="hosts">by destination</option>
+            <option value="countries">by country</option>
             <option value="events">observations</option>
             <option value="sessions">sessions</option>
           </select>
@@ -601,6 +653,36 @@ function setPaused(v) {
   if (!v) applyPending(true);
 }
 
+// Theme cycles System -> Light -> Dark and back. "system" clears the override
+// so the OS setting wins again; the choice persists across reloads.
+const THEMES = [
+  { id: "system", icon: "🖥", label: "Theme: follows your system" },
+  { id: "light", icon: "☀️", label: "Theme: light" },
+  { id: "dark", icon: "🌙", label: "Theme: dark" },
+];
+function currentTheme() {
+  try { return localStorage.getItem("ovpnmon-theme") || "system"; }
+  catch (e) { return "system"; }
+}
+function applyTheme(id) {
+  const root = document.documentElement;
+  if (id === "system") root.removeAttribute("data-theme");
+  else root.setAttribute("data-theme", id);
+  try {
+    if (id === "system") localStorage.removeItem("ovpnmon-theme");
+    else localStorage.setItem("ovpnmon-theme", id);
+  } catch (e) { /* private mode: applies for this page only */ }
+  const t = THEMES.find((x) => x.id === id) || THEMES[0];
+  const btn = $("themeBtn");
+  btn.textContent = t.icon;
+  btn.title = t.label;
+}
+applyTheme(currentTheme());
+$("themeBtn").addEventListener("click", () => {
+  const i = THEMES.findIndex((x) => x.id === currentTheme());
+  applyTheme(THEMES[(i + 1) % THEMES.length].id);
+});
+
 $("pauseBtn").addEventListener("click", () => setPaused(!paused));
 $("rateSel").addEventListener("change", (e) => {
   redrawEvery = Number(e.target.value);
@@ -669,9 +751,34 @@ function drawSnapshot(snap) {
 const openUsers = new Set();   // expanded rows, kept across refreshes
 let usersCache = [];
 
+// flagEmoji turns a two-letter ISO country code into its flag, by mapping each
+// letter to a regional-indicator symbol. Returns "" for anything that is not a
+// pair of letters.
+function flagEmoji(iso) {
+  if (!iso || iso.length !== 2 || !/^[A-Za-z]{2}$/.test(iso)) return "";
+  const cc = iso.toUpperCase();
+  return String.fromCodePoint(
+    0x1f1e6 + cc.charCodeAt(0) - 65,
+    0x1f1e6 + cc.charCodeAt(1) - 65,
+  );
+}
+
+// geoCell renders where a destination is. The country code is compact enough
+// for the table; the full city and country go in the tooltip.
+function geoCell(geo) {
+  if (!geo || (!geo.country_iso && !geo.country_name)) {
+    return '<td class="geo"></td>';
+  }
+  const flag = flagEmoji(geo.country_iso);
+  const label = geo.country_iso || geo.country_name;
+  const title = [geo.city, geo.country_name].filter(Boolean).join(", ");
+  const flagSpan = flag ? `<span class="flag">${flag}</span>` : "";
+  return `<td class="geo" title="${esc(title)}">${flagSpan}${esc(label)}</td>`;
+}
+
 function destinationRows(dests) {
   if (!dests || !dests.length) {
-    return '<tr><td colspan="7" class="empty">No traffic observed yet.</td></tr>';
+    return '<tr><td colspan="8" class="empty">No traffic observed yet.</td></tr>';
   }
   return dests.map((d) => {
     const name = d.hostname || "";
@@ -696,6 +803,7 @@ function destinationRows(dests) {
         ${label}
       </td>
       <td class="ip">${esc(d.remote_ip)}${r && name ? " · " + esc(name) : ""}</td>
+      ${geoCell(d.geo)}
       <td class="num">${esc(d.proto)}/${d.port} ${svc}</td>
       <td class="num up">${bytes(d.tx_bytes)}</td>
       <td class="num down">${bytes(d.rx_bytes)}</td>
@@ -755,7 +863,7 @@ function renderUsers(users) {
     </div>` : (id && id.ambiguous) ? `<div class="identity ambiguous">
       <div class="idrow">
         <span class="idlabel">${esc(id.source)}</span>
-        <span class="idmain">이름이 여러 계정과 일치합니다</span>
+        <span class="idmain">name matches more than one account</span>
       </div>
       <div class="idrow">
         <span class="idlabel">candidates</span>
@@ -785,7 +893,7 @@ function renderUsers(users) {
     const body = s
       ? `<div class="scroll"><table>
            <thead><tr>
-             <th>Destination</th><th>Address</th><th style="text-align:right">Port</th>
+             <th>Destination</th><th>Address</th><th>Location</th><th style="text-align:right">Port</th>
              <th style="text-align:right">Up</th><th style="text-align:right">Down</th>
              <th style="text-align:right">Conns</th><th style="text-align:right">Last</th>
            </tr></thead>
@@ -1104,7 +1212,7 @@ let enrichSource = "";     // name of the identity source, "" when none
 
 // The header carries enough of the identity source's state to tell a broken
 // integration from an empty one. "addresses 0" is exactly that difference:
-// credentials work, CloudStack simply has no VMs yet.
+// credentials work, the source simply has nothing to report yet.
 async function refreshStatus() {
   const pill = $("enrichPill");
   try {
@@ -1304,16 +1412,35 @@ document.querySelectorAll(".tab").forEach((tab) => {
   });
 });
 
+// countryCell renders a country code with its flag, or "" for none. Returns
+// HTML (the history table inserts cells unescaped), so the code is esc()'d.
+function countryCell(iso) {
+  if (!iso) return "";
+  const flag = flagEmoji(iso);
+  return `${flag ? `<span class="flag">${flag}</span>` : ""}${esc(iso)}`;
+}
+
 const histTables = {
   hosts: {
-    head: ["Destination", "User", "Up", "Down", "Conns", "Sessions", "Last seen"],
+    head: ["Destination", "User", "Country", "Up", "Down", "Conns", "Sessions", "Last seen"],
     row: (h) => [
-      esc(h.hostname), esc(h.common_name),
+      esc(h.hostname), esc(h.common_name), countryCell(h.country),
       bytes(h.tx_bytes), bytes(h.rx_bytes),
       h.connections || "", h.sessions,
       new Date(h.last_seen).toLocaleString(),
     ],
-    align: [0, 0, 1, 1, 1, 1, 1],
+    align: [0, 0, 0, 1, 1, 1, 1, 1],
+  },
+  countries: {
+    head: ["Country", "Hosts", "Up", "Down", "Conns", "First seen", "Last seen"],
+    row: (c) => [
+      countryCell(c.country), c.hosts,
+      bytes(c.tx_bytes), bytes(c.rx_bytes),
+      c.connections || "",
+      new Date(c.first_seen).toLocaleString(),
+      new Date(c.last_seen).toLocaleString(),
+    ],
+    align: [0, 1, 1, 1, 1, 0, 0],
   },
   events: {
     head: ["Time", "Kind", "User", "Destination", "Address", "Detail"],

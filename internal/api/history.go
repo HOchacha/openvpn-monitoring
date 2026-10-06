@@ -160,6 +160,20 @@ func (s *Server) handleHistoryHosts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, emptyIfNil(rows))
 }
 
+func (s *Server) handleHistoryCountries(w http.ResponseWriter, r *http.Request) {
+	f, err := parseFilter(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	rows, err := s.store.TopCountries(r.Context(), f)
+	if err != nil {
+		s.storeError(w, "countries", err)
+		return
+	}
+	writeJSON(w, emptyIfNil(rows))
+}
+
 func (s *Server) handleHistoryStats(w http.ResponseWriter, r *http.Request) {
 	counts, err := s.store.Counts(r.Context())
 	if err != nil {

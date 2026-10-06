@@ -106,8 +106,8 @@ func (s *Store) Destinations(ctx context.Context, f Filter) ([]Destination, erro
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT d.session_id, s.common_name, d.remote_ip, d.port, d.proto,
-		        d.hostname, d.name_source, d.tx_bytes, d.rx_bytes, d.packets,
-		        d.connections, d.first_seen, d.last_seen
+		        d.hostname, d.name_source, d.country, d.tx_bytes, d.rx_bytes,
+		        d.packets, d.connections, d.first_seen, d.last_seen
 		 FROM destinations d
 		 JOIN sessions s ON s.id = d.session_id`+where+`
 		 ORDER BY (d.tx_bytes + d.rx_bytes) DESC LIMIT ?`, args...)
@@ -123,7 +123,7 @@ func (s *Store) Destinations(ctx context.Context, f Filter) ([]Destination, erro
 			first, last int64
 		)
 		if err := rows.Scan(&d.SessionID, &d.CommonName, &d.RemoteIP, &d.Port,
-			&d.Proto, &d.Hostname, &d.NameSource, &d.TxBytes, &d.RxBytes,
+			&d.Proto, &d.Hostname, &d.NameSource, &d.Country, &d.TxBytes, &d.RxBytes,
 			&d.Packets, &d.Connections, &first, &last); err != nil {
 			return nil, err
 		}
@@ -168,6 +168,7 @@ func (s *Store) Events(ctx context.Context, f Filter) ([]Event, error) {
 type HostSummary struct {
 	Hostname    string    `json:"hostname"`
 	CommonName  string    `json:"common_name,omitempty"`
+	Country     string    `json:"country,omitempty"` // ISO 3166-1 alpha-2, from GeoIP
 	Sessions    int       `json:"sessions"`
 	TxBytes     uint64    `json:"tx_bytes"`
 	RxBytes     uint64    `json:"rx_bytes"`
@@ -189,7 +190,7 @@ func (s *Store) TopHosts(ctx context.Context, f Filter) ([]HostSummary, error) {
 	nameExpr := `CASE WHEN d.hostname <> '' THEN d.hostname ELSE d.remote_ip END`
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+nameExpr+` AS host, s.common_name,
+		`SELECT `+nameExpr+` AS host, s.common_name, MAX(d.country),
 		        COUNT(DISTINCT d.session_id), SUM(d.tx_bytes), SUM(d.rx_bytes),
 		        SUM(d.connections), MIN(d.first_seen), MAX(d.last_seen)
 		 FROM destinations d
@@ -208,13 +209,70 @@ func (s *Store) TopHosts(ctx context.Context, f Filter) ([]HostSummary, error) {
 			h           HostSummary
 			first, last int64
 		)
-		if err := rows.Scan(&h.Hostname, &h.CommonName, &h.Sessions,
+		if err := rows.Scan(&h.Hostname, &h.CommonName, &h.Country, &h.Sessions,
 			&h.TxBytes, &h.RxBytes, &h.Connections, &first, &last); err != nil {
 			return nil, err
 		}
 		h.FirstSeen = time.Unix(first, 0)
 		h.LastSeen = time.Unix(last, 0)
 		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// CountrySummary aggregates all traffic to one country over a window.
+type CountrySummary struct {
+	Country     string    `json:"country"` // ISO 3166-1 alpha-2
+	Hosts       int       `json:"hosts"`   // distinct destinations placed there
+	TxBytes     uint64    `json:"tx_bytes"`
+	RxBytes     uint64    `json:"rx_bytes"`
+	Connections uint64    `json:"connections"`
+	FirstSeen   time.Time `json:"first_seen"`
+	LastSeen    time.Time `json:"last_seen"`
+}
+
+// TopCountries answers "where in the world did this traffic go", by summing
+// destinations that GeoIP placed in each country. Rows with no country (a
+// private address, or history recorded before a GeoIP database was configured)
+// are excluded rather than lumped into a blank bucket.
+func (s *Store) TopCountries(ctx context.Context, f Filter) ([]CountrySummary, error) {
+	where, args := f.where("s.common_name", "d.hostname", "d.remote_ip", "d.last_seen", "")
+	// Restrict to rows that actually have a country. where() returns "" when
+	// nothing was filtered, so start the clause in that case.
+	if where == "" {
+		where = ` WHERE d.country <> ''`
+	} else {
+		where += ` AND d.country <> ''`
+	}
+	args = append(args, f.limit())
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT d.country,
+		        COUNT(DISTINCT d.remote_ip), SUM(d.tx_bytes), SUM(d.rx_bytes),
+		        SUM(d.connections), MIN(d.first_seen), MAX(d.last_seen)
+		 FROM destinations d
+		 JOIN sessions s ON s.id = d.session_id`+where+`
+		 GROUP BY d.country
+		 ORDER BY SUM(d.tx_bytes + d.rx_bytes) DESC
+		 LIMIT ?`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying top countries: %w", err)
+	}
+	defer rows.Close()
+
+	var out []CountrySummary
+	for rows.Next() {
+		var (
+			c           CountrySummary
+			first, last int64
+		)
+		if err := rows.Scan(&c.Country, &c.Hosts, &c.TxBytes, &c.RxBytes,
+			&c.Connections, &first, &last); err != nil {
+			return nil, err
+		}
+		c.FirstSeen = time.Unix(first, 0)
+		c.LastSeen = time.Unix(last, 0)
+		out = append(out, c)
 	}
 	return out, rows.Err()
 }

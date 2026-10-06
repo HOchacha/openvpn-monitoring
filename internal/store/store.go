@@ -90,6 +90,7 @@ type Destination struct {
 	Proto       string    `json:"proto"`
 	Hostname    string    `json:"hostname,omitempty"`
 	NameSource  string    `json:"name_source,omitempty"`
+	Country     string    `json:"country,omitempty"` // ISO 3166-1 alpha-2, from GeoIP
 	TxBytes     uint64    `json:"tx_bytes"`
 	RxBytes     uint64    `json:"rx_bytes"`
 	Packets     uint64    `json:"packets"`

@@ -1,14 +1,14 @@
 # ovpnmon
 
-OpenVPN 서버에 **누가 접속해 있는지**, 그리고 그 사용자가 **VPN을 통해 어디로 접속하는지**를
-실시간으로 추적합니다.
+Tracks, in real time, **who is connected** to an OpenVPN server and **where
+those users are going** through the VPN.
 
 <img width="1086" height="546" alt="image" src="https://github.com/user-attachments/assets/07629af2-1eac-438f-ad66-674483cc5196" />
 
 
-## 요구 사항
+## Requirements
 
-먼저 확인해보십시오 — 아무것도 설치하지 않고 현재 상태만 보고합니다:
+Check first — this installs nothing and only reports the current state:
 
 ```bash
 make deps-check
@@ -23,78 +23,85 @@ make deps-check
   ...
 ```
 
-부족한 것이 있으면:
+If something is missing:
 
 ```bash
-make deps            # 빌드 툴체인 (필요하면 Go도 공식 tarball로 설치)
-make deps-dev        # 테스트·벤치마크 도구 (bpftrace, iperf3, jq …)
-make deps-all        # 위 둘 다
+make deps            # build toolchain (installs Go from the official tarball if needed)
+make deps-dev        # test and benchmark tools (bpftrace, iperf3, jq …)
+make deps-all        # both of the above
 ```
 
-`make deps`는 필요한 Go 버전을 **`go.mod`에서 읽어** 판단합니다. 배포판이 제공하는
-Go가 낮으면(예: Ubuntu 24.04는 1.22) 공식 tarball을 받아 sha256을 검증한 뒤
-`/usr/local/go`에 설치합니다. 이미 충분하면 아무것도 하지 않습니다.
-apt·dnf·yum·pacman을 인식하며, 그 외 배포판에서는 필요한 패키지 목록을 알려줍니다.
+`make deps` decides the required Go version by **reading it from `go.mod`**. If
+the distribution's Go is too old (Ubuntu 24.04 ships 1.22, for example), it
+downloads the official tarball, verifies its sha256, and installs it to
+`/usr/local/go`. If the existing Go is new enough, it does nothing. It knows
+apt, dnf, yum and pacman; on other distributions it prints the list of packages
+you need.
 
-정리하면 요구 사항은 이렇습니다:
+In short, the requirements are:
 
-- Linux 커널 **6.6 이상** (TCX 훅). BTF(`/sys/kernel/btf/vmlinux`) 필요
-- OpenVPN 2.4 이상, management 인터페이스 활성화
-- 빌드: Go (버전은 `go.mod` 기준)
-- **eBPF 재컴파일 시에만**: clang 15+, `libbpf-dev`. 컴파일된 오브젝트가 저장소에
-  포함되어 있으므로 `bpf/ovpnmon.bpf.c`를 고치지 않는 한 필요 없습니다
-- 실행: root, 또는 `CAP_BPF` + `CAP_NET_ADMIN` + `CAP_PERFMON`
+- Linux kernel **6.6 or newer** (TCX hooks). BTF (`/sys/kernel/btf/vmlinux`) required
+- OpenVPN 2.4 or newer, with the management interface enabled
+- Build: Go (version per `go.mod`)
+- **Only to recompile the eBPF**: clang 15+, `libbpf-dev`. The compiled object
+  is checked into the repository, so you do not need these unless you edit
+  `bpf/ovpnmon.bpf.c`
+- Runtime: root, or `CAP_BPF` + `CAP_NET_ADMIN` + `CAP_PERFMON`
 
-> **OpenVPN 2.6의 DCO 주의.** Data Channel Offload가 켜지면 데이터 경로가 `ovpn-dco`
-> 커널 모듈로 옮겨가 tun 디바이스를 지나지 않습니다. 서버 설정에 `disable-dco`가
-> 필요하며, `make preflight`가 이를 검사합니다.
+> **OpenVPN 2.6 DCO caveat.** When Data Channel Offload is on, the data path
+> moves into the `ovpn-dco` kernel module and no longer passes through the tun
+> device. The server config then needs `disable-dco`, and `make preflight`
+> checks for it.
 
-> **management 인터페이스는 동시 접속을 하나만 받습니다.** ovpnmon이 붙어 있는 동안
-> `telnet 127.0.0.1 7505`로 직접 접속하면 연결은 되지만 응답이 오지 않고 대기합니다.
-> 수동으로 진단할 일이 있으면 `systemctl stop ovpnmon` 후에 붙거나, 같은 데이터를
-> `/api/snapshot`에서 읽으십시오. 같은 이유로 ovpnmon과 다른 OpenVPN 모니터링 도구를
-> 같은 포트에 동시에 붙일 수 없습니다.
+> **The management interface accepts only one connection at a time.** While
+> ovpnmon is attached, connecting directly with `telnet 127.0.0.1 7505` will
+> succeed but hang with no reply. If you need to diagnose by hand, either
+> `systemctl stop ovpnmon` first and then attach, or read the same data from
+> `/api/snapshot`. For the same reason ovpnmon cannot share the port with
+> another OpenVPN monitoring tool.
 
-## 빠른 시작
+## Quick start
 
-**OpenVPN 서버 구축은 이 저장소의 범위가 아닙니다.** 이미 쓰고 계신 방법을 그대로
-쓰십시오 — 없다면 [Nyr/openvpn-install](https://github.com/Nyr/openvpn-install)이
-좋은 기본값입니다. NAT·IP 포워딩·영속 방화벽 규칙까지 처리해 줍니다.
+**Building the OpenVPN server itself is out of scope for this repository.** Use
+whatever you already use — if you have nothing,
+[Nyr/openvpn-install](https://github.com/Nyr/openvpn-install) is a good default.
+It handles NAT, IP forwarding and persistent firewall rules for you.
 
-VPN이 이미 돌고 있다는 전제에서:
+Assuming the VPN is already running:
 
 ```bash
 git clone https://github.com/HOchacha/openvpn-monitoring
 cd openvpn-monitoring
 
-make preflight       # OpenVPN 쪽에 무엇이 필요한지, 재시작이 필요한지
-make install         # 빌드 + /opt/ovpnmon 에 설치
+make preflight       # what the OpenVPN side needs, and whether a restart is required
+make install         # build + install into /opt/ovpnmon
 sudo systemctl enable --now ovpnmon
 ```
 
-`make preflight`가 알려주는 대로 OpenVPN 설정에 **두 줄**을 추가해야 할 수 있습니다.
-그게 전부입니다:
+As `make preflight` reports, you may need to add **two lines** to the OpenVPN
+config. That is all:
 
 ```
-management 127.0.0.1 7505     # 필수 — 없으면 "누가"를 알 수 없습니다
-disable-dco                   # OpenVPN 2.6+ 에서만
+management 127.0.0.1 7505     # required — without it there is no "who"
+disable-dco                   # only on OpenVPN 2.6+
 ```
 
-> Nyr 설치 스크립트가 만드는 `server.conf`에는 둘 다 없으므로 추가가 필요합니다.
-> 추가 후 OpenVPN을 한 번 재시작해야 하고, **그때 접속자가 끊깁니다.** ovpnmon
-> 자체를 설치·시작·중지하는 것은 기존 연결에 아무 영향이 없습니다.
+> The `server.conf` the Nyr script generates has neither line, so you will need
+> to add them. After adding them OpenVPN must be restarted once, and **that
+> disconnects everyone.** Installing, starting or stopping ovpnmon itself has no
+> effect on existing connections.
 
-## 배포 상세
+## Deployment detail
 
-### 1. 점검 — 아무것도 바꾸지 않습니다
+### 1. Inspect — changes nothing
 
 ```bash
-make deps-check   # 커널·BTF·툴체인
-make preflight    # OpenVPN 쪽에 필요한 변경과 중단 여부
+make deps-check   # kernel, BTF, toolchain
+make preflight    # what the OpenVPN side needs, and whether it interrupts
 ```
 
-`make preflight`는 상태만 읽습니다. 알려주는 것 중 가장 중요한 건 **OpenVPN 재시작이
-필요한지**입니다 — 재시작은 모든 클라이언트를 끊습니다.
+`make preflight` only reads state. The most important thing it tells you is
+**whether OpenVPN needs a restart** — a restart disconnects every client.
 
 ```
 Kernel
@@ -113,78 +120,82 @@ Verdict
   Ready. OpenVPN needs no changes, so nothing disconnects.
 ```
 
-### OpenVPN 쪽에 필요한 수정
+### Changes needed on the OpenVPN side
 
-**두 줄이 전부입니다.** 그마저 이미 있으면 아무것도 바꿀 필요가 없습니다.
+**Two lines is all it is.** And if they are already there, you change nothing.
 
 ```
-management 127.0.0.1 7505     # 필수 — 없으면 "누가"를 알 수 없습니다
-disable-dco                   # OpenVPN 2.6+ 에서 필요
+management 127.0.0.1 7505     # required — without it there is no "who"
+disable-dco                   # only on OpenVPN 2.6+
 ```
 
-`disable-dco`가 필요한 이유는 Data Channel Offload가 켜지면 데이터 경로가 커널 모듈로
-옮겨가 **tun 디바이스를 지나지 않기** 때문입니다. 프로브는 정상적으로 붙지만 아무것도
-세지 못합니다.
+`disable-dco` is needed because when Data Channel Offload is on, the data path
+moves into a kernel module and **no longer passes through the tun device**. The
+probe still attaches fine but counts nothing.
 
-management에 비밀번호를 걸어둔 서버(`management <host> <port> <pwfile>`)라면 같은
-파일을 ovpnmon에도 알려주십시오:
+If the server has a password on its management interface
+(`management <host> <port> <pwfile>`), point ovpnmon at the same file:
 
 ```ini
 mgmt-password-file = /etc/openvpn/mgmt-password
 ```
 
-**그 외에는 아무것도 바꾸지 않습니다:**
+**Nothing else changes:**
 
-- `status`/`status-version` 설정 불필요 — management로 `status 3`을 직접 요청합니다
-- PKI·인증서·인증 흐름에 관여하지 않습니다
-- 라우팅·방화벽·NAT를 건드리지 않습니다 (운영 서버엔 이미 있습니다)
-- 클라이언트를 끊거나 차단할 수 없습니다 — 보내는 명령은 `status 3`과 `exit` 뿐입니다
+- No `status`/`status-version` settings needed — it requests `status 3` over
+  management directly
+- It does not touch PKI, certificates, or the auth flow
+- It does not touch routing, firewall or NAT (a running server already has those)
+- It cannot disconnect or block clients — the only commands it sends are
+  `status 3` and `exit`
 
-> management 인터페이스는 **동시 접속을 하나만** 받습니다. 이미 다른 도구(openvpn-monitor,
-> 자체 스크립트 등)가 붙어 있다면 공존할 수 없으니 그쪽을 정리해야 합니다.
-> 그리고 이 인터페이스는 세션을 kill할 수 있으므로 반드시 루프백으로 제한하십시오.
+> The management interface accepts **only one connection at a time**. If another
+> tool (openvpn-monitor, your own script, …) is already attached, they cannot
+> coexist and you must remove the other one. And because this interface can kill
+> sessions, always bind it to loopback.
 
-### 중단이 필요한 경우와 아닌 경우
+### When it interrupts and when it does not
 
-| 작업 | 영향 |
+| Action | Effect |
 |---|---|
-| ovpnmon 설치·시작·중지 | **무중단.** eBPF 프로브를 붙이는 것은 기존 연결을 건드리지 않습니다 |
-| OpenVPN에 `management` 추가 | **전 클라이언트 접속 끊김** (OpenVPN 재시작 필요) |
-| OpenVPN에 `disable-dco` 추가 | **전 클라이언트 접속 끊김** (동일) |
+| Install / start / stop ovpnmon | **No interruption.** Attaching the eBPF probe does not touch existing connections |
+| Add `management` to OpenVPN | **All clients disconnect** (OpenVPN restart required) |
+| Add `disable-dco` to OpenVPN | **All clients disconnect** (same) |
 
-preflight가 `Ready`라고 하면 OpenVPN을 건드릴 필요가 없으므로 아무도 끊기지 않습니다.
-변경이 필요하다고 나오면 점검 창을 잡으십시오. **OpenVPN 변경을 먼저 하고, ovpnmon
-설치는 나중에 아무 때나** 하면 중단을 한 번으로 줄일 수 있습니다.
+If preflight says `Ready`, you do not need to touch OpenVPN and nobody is
+disconnected. If it says a change is needed, schedule a maintenance window. You
+can reduce interruptions to a single one by **making the OpenVPN change first
+and installing ovpnmon whenever you like afterward.**
 
-### 2. 설치 — 무중단입니다
+### 2. Install — no interruption
 
 ```bash
-make deps                    # Go 등 빌드 도구 (없을 때만)
-make install                 # 빌드 후 /opt/ovpnmon 에 설치
+make deps                    # build tools such as Go (only if missing)
+make install                 # build, then install into /opt/ovpnmon
 ```
 
-설정을 맞추고 기동합니다. `preflight.sh`가 이 호스트에 맞는 `iface`와 `subnet`을
-이미 알려줬을 것입니다:
+Adjust the config and start it. `preflight.sh` will already have told you the
+`iface` and `subnet` for this host:
 
 ```bash
 sudo vi /opt/ovpnmon/etc/ovpnmon.conf
 sudo systemctl enable --now ovpnmon
 ```
 
-확인:
+Verify:
 
 ```bash
 curl -s localhost:9095/healthz
 curl -s localhost:9095/api/snapshot | jq '.sessions[].common_name'
 ```
 
-### 3. 선택 — Prometheus / Grafana
+### 3. Optional — Prometheus / Grafana
 
 ```bash
 make observability
 ```
 
-### 업그레이드
+### Upgrading
 
 ```bash
 git pull
@@ -192,23 +203,26 @@ make install
 sudo systemctl restart ovpnmon
 ```
 
-`make install`은 **기존 설정을 덮어쓰지 않습니다** — 새 기본값은
-`ovpnmon.conf.default`로 옆에 떨어뜨리므로 diff해서 확인할 수 있습니다. 이력 DB도
-그대로입니다. 재시작 중에는 플로우 집계가 잠시 멈추지만(커널 맵이 비워집니다) 이미
-기록된 이력은 남습니다.
+`make install` **does not overwrite your existing config** — it drops the new
+defaults alongside as `ovpnmon.conf.default` so you can diff them. The history
+DB is left as is too. During the restart, flow aggregation pauses briefly (the
+kernel map is cleared), but everything already recorded to history survives.
 
-**OpenVPN은 재시작하지 마십시오** — 필요 없고, 그것만이 사용자를 끊습니다.
+**Do not restart OpenVPN** — it is not needed, and it is the only thing that
+disconnects users.
 
-> 빌드 도구를 운영 서버에 두고 싶지 않다면, 빌드 머신에서 `make build`로 만든
-> `ovpnmon` 바이너리 하나만 복사해도 됩니다. eBPF 오브젝트가 안에 임베드되어 있어서
-> 대상 서버에는 Go도 clang도 커널 헤더도 필요 없습니다. 나머지 파일(설정 샘플,
-> systemd 유닛)은 저장소에서 가져오면 됩니다.
+> If you would rather not keep build tools on the production server, you can
+> copy just the single `ovpnmon` binary built with `make build` on a build
+> machine. The eBPF object is embedded inside it, so the target server needs
+> neither Go, nor clang, nor kernel headers. Pull the rest of the files (the
+> sample config, the systemd unit) from the repository.
 
-### 테스트 클라이언트
+### Test client
 
-서버 설정은 `redirect-gateway`를 push하므로, **같은 호스트에서 그냥 클라이언트를 띄우면
-호스트의 기본 경로가 터널로 넘어가 SSH 세션이 끊깁니다.** `dev/test-client.sh`는
-클라이언트를 network namespace에 격리해 이 위험을 없앱니다.
+The server config pushes `redirect-gateway`, so **simply starting a client on
+the same host moves the host's default route into the tunnel and kills your SSH
+session.** `dev/test-client.sh` isolates the client in a network namespace to
+remove that risk.
 
 ```bash
 sudo ./dev/test-client.sh up alice
@@ -216,279 +230,300 @@ sudo ./dev/test-client.sh exec alice -- curl -s https://example.com -o /dev/null
 sudo ./dev/test-client.sh down alice
 ```
 
-## 인터페이스
+## Interfaces
 
-| 경로 | 내용 |
+| Path | Contents |
 |---|---|
-| `/` | 실시간 웹 대시보드 (Live / History 탭) |
-| `/api/snapshot` | 세션·목적지·프로브 통계 전체 |
-| `/api/sessions` | 세션 목록 (`?common_name=alice`로 필터) |
-| `/api/events` | 최근 라이브 이벤트 (메모리) |
-| `/api/users` | **전체 사용자** — PKI 발급자 + 접속 이력 + 현재 접속 여부 |
-| `PUT /api/users/{cn}/note` | 사용자 메모 저장 (빈 값이면 삭제) |
-| `POST /api/login` · `/api/logout` | 대시보드 로그인 |
-| `POST /api/sessions/{cid}/kill` | 접속 강제 종료 |
-| `POST /api/certificates` | 인증서 발급 |
-| `DELETE /api/certificates/{cn}` | 인증서 폐기 (+CRL 갱신) |
-| `GET /api/certificates/{cn}/profile` | `.ovpn` 다운로드 |
-| `/api/stream` | WebSocket 실시간 스트림 |
-| `/api/history/hosts` | **누가 어디로** — 목적지별 집계 |
-| `/api/history/sessions` | 접속 이력 |
-| `/api/history/destinations` | 세션별 목적지 상세 |
-| `/api/history/events` | 저장된 DNS/TLS/HTTP 관측 기록 |
-| `/api/history/stats` | 저장 현황과 쓰기 상태 |
-| `/metrics` | Prometheus 메트릭 |
-| `/healthz` | management 연결 상태 |
+| `/` | Live web dashboard (Live / History tabs) |
+| `/api/snapshot` | Full sessions, destinations and probe stats |
+| `/api/sessions` | Session list (filter with `?common_name=alice`) |
+| `/api/events` | Recent live events (in memory) |
+| `/api/users` | **All users** — PKI issued + connection history + currently connected |
+| `PUT /api/users/{cn}/note` | Save a user note (empty value deletes it) |
+| `POST /api/login` · `/api/logout` | Dashboard login |
+| `POST /api/sessions/{cid}/kill` | Force-disconnect a session |
+| `POST /api/certificates` | Issue a certificate |
+| `DELETE /api/certificates/{cn}` | Revoke a certificate (+ refresh the CRL) |
+| `GET /api/certificates/{cn}/profile` | Download the `.ovpn` |
+| `/api/stream` | WebSocket live stream |
+| `/api/history/hosts` | **Who went where** — per-destination aggregate |
+| `/api/history/countries` | **Where in the world** — per-country aggregate (needs a GeoIP database) |
+| `/api/history/sessions` | Connection history |
+| `/api/history/destinations` | Per-session destination detail |
+| `/api/history/events` | Stored DNS/TLS/HTTP observations |
+| `/api/history/stats` | Storage status and write health |
+| `/api/enrichment` | State of the optional identity source, if one is wired |
+| `/metrics` | Prometheus metrics |
+| `/healthz` | Management interface reachability |
 
-`/api/history/*`는 `-store`가 설정된 경우에만 존재합니다.
+`/api/history/*` exists only when `-store` is set.
 
-주요 메트릭:
+Key metrics:
 
 ```
-openvpn_sessions                                            현재 접속자 수
-openvpn_session_info{common_name,virtual_ip,real_address}   접속자 신원
-openvpn_client_bytes{common_name,direction}                 터널 내부 평문 바이트
-openvpn_tunnel_bytes{common_name,direction}                 OpenVPN이 센 암호화 바이트
-openvpn_destination_bytes{common_name,hostname,port,...}    목적지별 바이트
-openvpn_probe_events_lost                                   링버퍼 유실 (0이어야 정상)
+openvpn_sessions                                            currently connected users
+openvpn_session_info{common_name,virtual_ip,real_address}   connected-user identity
+openvpn_client_bytes{common_name,direction}                 cleartext bytes inside the tunnel
+openvpn_tunnel_bytes{common_name,direction}                 encrypted bytes as counted by OpenVPN
+openvpn_destination_bytes{common_name,hostname,port,...}    per-destination bytes
+openvpn_probe_events_lost                                   ring-buffer loss (should be 0)
 ```
 
-`openvpn_destination_bytes`는 카디널리티가 폭증할 수 있어 클라이언트당 상위 N개만
-노출하고 나머지는 `hostname="other"`로 합산합니다 (`-top-destinations`, 기본 20,
-`0`이면 비활성화).
+`openvpn_destination_bytes` can blow up cardinality, so it exposes only the top
+N per client and sums the rest into `hostname="other"` (`-top-destinations`,
+default 20, `0` disables).
 
-## 설치되는 것
+## What gets installed
 
-### 데몬
+### Daemon
 
-| 유닛 | 실행 | 역할 |
+| Unit | Runs as | Role |
 |---|---|---|
-| `ovpnmon` | root | eBPF 프로브 + 대시보드/API/메트릭 |
+| `ovpnmon` | root | eBPF probe + dashboard/API/metrics |
 
-OpenVPN 서버 자체와 그 방화벽 규칙은 OpenVPN 설치 스크립트가 관리합니다.
+The OpenVPN server itself and its firewall rules are managed by the OpenVPN
+install script.
 
-### 파일
+### Files
 
-ovpnmon이 소유하는 것은 **전부 `/opt/ovpnmon` 아래 한 곳에** 있습니다.
-시스템 디렉토리에 흩어놓지 않습니다.
+Everything ovpnmon owns lives **in one place, under `/opt/ovpnmon`**. Nothing is
+scattered across system directories.
 
 ```
 /opt/ovpnmon/
-├── bin/ovpnmon                 바이너리 (eBPF 오브젝트 임베드, ~25MB)
-├── etc/ovpnmon.conf            ★ 설정 (0640) — 여기만 고치면 됩니다
-├── etc/firewall.conf           서브넷·인터페이스
-├── data/history.db{,-wal,-shm} ★ 접속 이력 (0600, 디렉토리 0700)
+├── bin/ovpnmon                 binary (eBPF object embedded, ~25MB)
+├── etc/ovpnmon.conf            ★ config (0640) — this is the only file you edit
+├── etc/firewall.conf           subnet and interface
+├── data/history.db{,-wal,-shm} ★ connection history (0600, dir 0700)
 └── README.md
 ```
 
-OS 규약상 다른 곳에 있어야 하는 것은 systemd 유닛 하나뿐입니다:
+By OS convention, the only thing that has to live elsewhere is the systemd unit:
 
 ```
 /etc/systemd/system/ovpnmon.service
 ```
 
-유닛은 `-config` 하나만 넘기고 나머지 설정은 전부 `etc/ovpnmon.conf`에 있으므로,
-**설정을 바꾸려고 유닛 파일을 편집할 일이 없습니다.**
+The unit passes only `-config` and keeps all other settings in
+`etc/ovpnmon.conf`, so **you never edit the unit file to change configuration.**
 
-제거는 흔적을 남기지 않습니다:
+Removal leaves no trace:
 
 ```bash
-make uninstall   # 바이너리·설정·유닛 제거, data/ 이력은 보존
-make purge       # /opt/ovpnmon 통째로 삭제
+make uninstall   # remove binary, config and unit; keep data/ history
+make purge       # delete /opt/ovpnmon entirely
 ```
 
-> 아래는 OpenVPN 설치 스크립트가 만드는 파일입니다. ovpnmon과는 무관하며 여기서 관리하지 않습니다.
+> The files below are created by the OpenVPN install script. They are unrelated
+> to ovpnmon and not managed here.
 >
 > ```
 > /etc/openvpn/server/{server.conf,ca.crt,server.crt}
-> /etc/openvpn/server/server.key            ★ 서버 개인키
-> /etc/openvpn/server/tls-crypt.key         ★ 제어 채널 사전 공유키
-> /etc/openvpn/easy-rsa/pki/                ★★ CA 개인키를 포함한 PKI 전체
-> /etc/openvpn/client-profiles/*.ovpn       ★★ 클라이언트 개인키 포함
+> /etc/openvpn/server/server.key            ★ server private key
+> /etc/openvpn/server/tls-crypt.key         ★ control-channel pre-shared key
+> /etc/openvpn/easy-rsa/pki/                ★★ the whole PKI, including the CA private key
+> /etc/openvpn/client-profiles/*.ovpn       ★★ contain client private keys
 > /var/log/openvpn/{server,status}.log, ipp.txt
 > /etc/sysctl.d/99-openvpn-forward.conf     net.ipv4.ip_forward = 1
-> /etc/logrotate.d/openvpn                  주간 로테이션, 8주 보관
+> /etc/logrotate.d/openvpn                  weekly rotation, 8 weeks retained
 > ```
 >
-> ★★ 중 `easy-rsa/pki/private/ca.key`가 유출되면 누구나 유효한 클라이언트 인증서를
-> 발급할 수 있어 인증 체계 전체가 무너집니다. 운영 환경에서는 CA를 오프라인 장비에
-> 두는 것이 정석입니다.
+> Of the ★★ items, if `easy-rsa/pki/private/ca.key` leaks, anyone can issue a
+> valid client certificate and the entire authentication scheme collapses. In
+> production the standard practice is to keep the CA on an offline machine.
 
-### 커널에만 존재하는 상태 (파일 아님)
+### State that exists only in the kernel (not files)
 
 ```
-tun0                       VPN 인터페이스
-eBPF 프로그램 2개           tun0의 TCX ingress/egress
-BPF 맵 5개                  flows, sessions, events, probe_stats, scratch
+tun0                       VPN interface
+2 eBPF programs            TCX ingress/egress on tun0
+5 BPF maps                 flows, sessions, events, probe_stats, scratch
 ```
 
-재부팅하면 사라지고, `ovpnmon` 서비스가 기동하면서 다시 붙입니다. VPN의 NAT·포워딩
-규칙은 OpenVPN 설치 스크립트가 관리합니다.
+These vanish on reboot and are re-attached when the `ovpnmon` service starts.
+The VPN's NAT and forwarding rules are managed by the OpenVPN install script.
 
-### 빌드에만 필요한 것
+### Build-only requirements
 
-`/usr/local/go`와 `clang`·`libbpf-dev` 패키지는 빌드 전용입니다. eBPF 오브젝트가
-바이너리에 임베드되므로 **배포 대상 서버에는 필요 없습니다.**
+`/usr/local/go` and the `clang`/`libbpf-dev` packages are build-only. Because
+the eBPF object is embedded in the binary, **the deployment target does not need
+them.**
 
-### 디스크 사용량
+### Disk usage
 
-이력 DB가 유일하게 계속 자라는 부분입니다. 대략적으로 사용자당 하루 수백 KB
-수준이며, `-retention`(기본 30일)이 상한을 정합니다. 대부분은 `events` 테이블이
-차지하므로, 용량이 문제라면 보관 기간을 줄이는 것이 가장 효과적입니다.
+The history DB is the only thing that keeps growing. Roughly, it is on the order
+of a few hundred KB per user per day, with `-retention` (default 30 days)
+setting the ceiling. Most of it is the `events` table, so if space is a concern,
+shortening the retention window is the most effective lever.
 
 ## Prometheus / Grafana
 
-`/metrics`를 직접 긁어도 되지만, 대시보드와 알림까지 한 번에 구성하려면:
+You can scrape `/metrics` directly, but to get dashboards and alerting in one
+step:
 
 ```bash
-make observability      # Prometheus + Grafana 설치, 프로비저닝까지
+make observability      # install Prometheus + Grafana, provisioning included
 ```
 
-| | 주소 | 비고 |
+| | Address | Note |
 |---|---|---|
-| ovpnmon | `127.0.0.1:9095` | Prometheus에 9090을 내주고 이동 |
+| ovpnmon | `127.0.0.1:9095` | yields 9090 to Prometheus and moves |
 | Prometheus | `127.0.0.1:9090` | |
-| Grafana | `127.0.0.1:3000` | 최초 로그인 `admin` / `admin` |
+| Grafana | `127.0.0.1:3000` | first login `admin` / `admin` |
 
-기본은 루프백입니다. 접속은 SSH 터널로:
+The default is loopback. Reach it over an SSH tunnel:
 
 ```bash
 ssh -N -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 ubuntu@<host>
 ```
 
-### 외부에 노출하려면
+### To expose it externally
 
-`deploy/observability/observability.conf`를 고치고 다시 적용합니다:
+Edit `deploy/observability/observability.conf` and re-apply:
 
 ```ini
 bind_addr       = 0.0.0.0
-prometheus_port = 9091      # 9090 이 이미 쓰이고 있다면
+prometheus_port = 9091      # if 9090 is already taken
 ```
 
 ```bash
 make observability-config
 ```
 
-**노출 전에 반드시:**
+**Before exposing it, without fail:**
 
-1. **Grafana 비밀번호를 바꾸십시오.** 기본값 `admin/admin`으로 열면 곧바로 위험합니다.
+1. **Change the Grafana password.** Leaving the default `admin/admin` open is an
+   immediate risk.
    ```bash
-   sudo grafana-cli admin reset-admin-password '<새 비밀번호>'
+   sudo grafana-cli admin reset-admin-password '<new password>'
    ```
-2. **ovpnmon과 Prometheus에는 인증이 전혀 없습니다.** 방화벽으로 접근 주소를
-   제한하거나 리버스 프록시를 앞에 두십시오. 두 엔드포인트 모두 사용자별 접속
-   호스트명 목록을 그대로 내어줍니다.
+2. **ovpnmon and Prometheus have no authentication at all.** Restrict access by
+   address with a firewall, or put a reverse proxy in front. Both endpoints hand
+   out the list of destination hostnames per user verbatim.
    ```bash
-   sudo iptables -A INPUT -p tcp --dport 9095 -s <관리자대역> -j ACCEPT
+   sudo iptables -A INPUT -p tcp --dport 9095 -s <admin range> -j ACCEPT
    sudo iptables -A INPUT -p tcp --dport 9095 -j DROP
    ```
 
-### 설정은 저장소가 원본입니다
+### The repository is the source of truth for configuration
 
-클릭으로 만든 대시보드는 Grafana DB와 함께 사라집니다. 여기서는 전부 파일입니다:
+Dashboards made by clicking around disappear with the Grafana DB. Here
+everything is a file:
 
 ```
 deploy/observability/
 ├── install.sh
 ├── prometheus/
-│   ├── ovpnmon-scrape.yml      스크레이프 설정
-│   └── ovpnmon.rules.yml       알림 + recording 규칙
+│   ├── ovpnmon-scrape.yml      scrape config
+│   └── ovpnmon.rules.yml       alerting + recording rules
 └── grafana/
     ├── datasource.yml
     ├── dashboard-provider.yml
     └── dashboards/ovpnmon.json
 ```
 
-대시보드는 `allowUiUpdates: false`로 프로비저닝됩니다 — UI에서 고쳐도 30초 뒤
-파일 내용으로 되돌아갑니다. **JSON을 고치고 `make observability-config`를 돌리십시오.**
-그래야 호스트를 다시 만들어도 같은 대시보드가 나옵니다.
+The dashboard is provisioned with `allowUiUpdates: false` — edits made in the UI
+revert to the file contents within 30 seconds. **Edit the JSON and run `make
+observability-config`.** That way the same dashboard reappears even if you
+rebuild the host.
 
-Prometheus 쪽도 `prometheus.yml`을 직접 편집하지 않고 `scrape_config_files`와
-`rule_files`로 드롭인을 참조하게 합니다. 패키지 업그레이드나 다른 잡에 영향을 주지
-않습니다.
+On the Prometheus side too, rather than editing `prometheus.yml` directly, it
+references drop-ins via `scrape_config_files` and `rule_files`, so a package
+upgrade or another job is unaffected.
 
-### 대시보드
+### Dashboard
 
-`VPN / OpenVPN — sessions and destinations`. 서버·사용자 변수로 필터할 수 있습니다.
+`VPN / OpenVPN — sessions and destinations`. Filterable by server and user
+variables.
 
-- **Health** — 접속자 수, management 연결 상태, 업/다운로드 **속도와 누적**, 추적 플로우, 유실 이벤트
-- **Who** — 사용자별 처리량(다운로드는 음수로 그려 방향 분리), 접속자 테이블
-  (인증서 CN·VPN IP·접속 출발지·암호화 방식·접속 시간)
-- **Where** — 목적지 Top 20 테이블, 목적지별 트래픽 추이, 사용자별 신규 연결 수
-- **Probe and history** — 검사 패킷 수, 이름 해석 현황, 이력 쓰기 상태
+- **Health** — connected users, management reachability, up/download **rate and
+  cumulative**, tracked flows, lost events
+- **Who** — per-user throughput (download drawn negative to separate direction),
+  connected-user table (certificate CN, VPN IP, connection source, cipher,
+  connection time)
+- **Where** — top-20 destination table, per-destination traffic trend, new
+  connections per user
+- **Probe and history** — packets inspected, name-resolution status, history
+  write status
 
-### 알림
+### Alerting
 
-모니터 자신이 신뢰할 수 있는지를 봅니다. **조용히 눈이 먼 모니터는 없는 것보다 나쁩니다** —
-대시보드는 멀쩡해 보이기 때문입니다.
+It watches whether the monitor itself can be trusted. **A monitor that has gone
+silently blind is worse than none** — because the dashboard still looks fine.
 
-| 알림 | 의미 |
+| Alert | Meaning |
 |---|---|
-| `OvpnmonDown` | 수집 전면 중단 (프로세스가 죽으면 eBPF도 떨어짐) |
-| `OvpnmonManagementUnreachable` | 트래픽은 세지만 사용자에 귀속되지 않음 |
-| `OvpnmonRingBufferOverflow` | DNS/TLS 관측 유실 → 목적지가 IP로만 남음 |
-| `OvpnmonProbeSeeingNoTraffic` | 접속자는 있는데 패킷이 안 보임 (인터페이스 오지정 또는 DCO) |
-| `OvpnmonHistoryWritesFailing` | 감사 로그에 구멍 |
-| `OvpnmonHistoryEventsDropped` | 부하로 이력 유실 (쓰기는 논블로킹이 의도) |
+| `OvpnmonDown` | Collection fully stopped (if the process dies, the eBPF drops too) |
+| `OvpnmonManagementUnreachable` | Traffic is counted but not attributed to users |
+| `OvpnmonRingBufferOverflow` | DNS/TLS observations lost → destinations remain IP-only |
+| `OvpnmonProbeSeeingNoTraffic` | Users are connected but no packets are seen (wrong interface or DCO) |
+| `OvpnmonHistoryWritesFailing` | Holes in the audit log |
+| `OvpnmonHistoryEventsDropped` | History lost under load (writes are non-blocking by design) |
 
-Alertmanager는 별도 구성입니다. `prometheus-alertmanager` 패키지를 설치하고
-`/etc/prometheus/prometheus.yml`의 `alerting.alertmanagers`를 확인하십시오.
+Alertmanager is a separate setup. Install the `prometheus-alertmanager` package
+and check `alerting.alertmanagers` in `/etc/prometheus/prometheus.yml`.
 
-## 이력 (감사 로그)
+## History (audit log)
 
-커널 플로우 맵은 **현재 상태**만 담습니다. 조용해진 대화는 `-flow-idle` 후 사라지고,
-재시작하면 전부 없어집니다. `-store`를 켜면 그 내용이 데이터베이스에 남아
-"지난주에 누가 어디에 접속했나"를 물어볼 수 있습니다.
+The kernel flow map holds **only the current state**. A conversation that goes
+quiet disappears after `-flow-idle`, and everything is gone on restart. Turning
+on `-store` keeps that content in a database, so you can ask "who connected to
+what last week".
 
 ```bash
-# SQLite (기본 권장 — 파일 하나, 외부 의존성 없음)
+# SQLite (the recommended default — one file, no external dependency)
 ovpnmon -store sqlite:/var/lib/ovpnmon/history.db -retention 720h
 
-# 기존 MySQL 사용
+# Use an existing MySQL
 ovpnmon -store 'mysql://ovpnmon:secret@tcp(127.0.0.1:3306)/ovpnmon?parseTime=true'
 ```
 
-세 개의 테이블이 각각 다른 질문에 답합니다:
+Three tables answer three different questions:
 
-| 테이블 | 내용 |
+| Table | Contents |
 |---|---|
-| `sessions` | 누가 언제부터 언제까지, 어느 IP에서 접속했나 |
-| `destinations` | 세션별로 어느 목적지에 얼마나 트래픽이 오갔나 |
-| `events` | DNS 조회·TLS 접속·HTTP 요청 개별 기록 |
+| `sessions` | who connected, from which IP, and for how long |
+| `destinations` | per session, how much traffic went to which destination |
+| `events` | individual DNS lookups, TLS connections, HTTP requests |
 
-조회 예시:
+Query examples:
 
 ```bash
-# 지난 7일간 alice가 접속한 목적지
+# Destinations alice reached in the last 7 days
 curl -s 'localhost:9090/api/history/hosts?common_name=alice&since=7d' | jq
 
-# 특정 도메인에 접속한 사람 전부 (하위 도메인 포함)
+# Everyone who reached a given domain (subdomains included)
 curl -s 'localhost:9090/api/history/hosts?hostname=example.com&since=30d' | jq
 
-# 특정 기간의 원본 관측 기록
+# Raw observations for a given window
 curl -s 'localhost:9090/api/history/events?from=2026-08-01&to=2026-08-02' | jq
 ```
 
-`since`는 `30m` `24h` `7d` `2w`를, `from`/`to`는 RFC3339·`YYYY-MM-DD`·unix time·`-7d`
-형식을 받습니다. 대시보드의 **History** 탭에서 같은 질의를 폼으로 할 수도 있습니다.
+`since` accepts `30m` `24h` `7d` `2w`; `from`/`to` accept RFC3339,
+`YYYY-MM-DD`, unix time and `-7d` forms. You can run the same queries from a form
+on the dashboard's **History** tab.
 
-설계상 알아두실 점:
+Design notes worth knowing:
 
-- **쓰기는 비동기입니다.** 모니터링이 감시 대상을 멈춰 세우면 안 되므로, 큐가 가득 차면
-  기록을 버리고 카운터를 올립니다. `openvpn_history_events_dropped`가 0이 아니면
-  감사 로그에 구멍이 생긴 것이니 경보를 걸어두십시오.
-- **바이트는 증분으로 누적됩니다.** 커널 플로우가 만료됐다 되살아나면 카운터가 0부터
-  다시 시작하므로, 최대값이 아니라 증가분을 더합니다.
-- **ovpnmon을 재시작해도 세션이 쪼개지지 않습니다.** OpenVPN이 알려주는 실제 연결
-  시각을 키로 삼아 기존 기록을 이어받습니다. 반대로 프로세스가 비정상 종료되어 열린 채
-  남은 세션은 다음 기동 때 마지막 활동 시각으로 닫힙니다.
-- `-retention`(기본 30일)이 지난 기록은 하루 한 번 삭제됩니다. `0`이면 영구 보관입니다.
-- SQLite 파일은 `0600`으로 생성됩니다.
+- **Writes are asynchronous.** Monitoring must never stall the thing it watches,
+  so when the queue fills it drops records and increments a counter. If
+  `openvpn_history_events_dropped` is non-zero, there is a hole in the audit log,
+  so alert on it.
+- **Bytes accumulate incrementally.** When a kernel flow expires and comes back,
+  the counter restarts from zero, so it adds the increment rather than the
+  maximum.
+- **Restarting ovpnmon does not split sessions.** It keys on the real connection
+  time OpenVPN reports and continues the existing record. Conversely, a session
+  left open by an abnormal exit is closed at its last-activity time on the next
+  startup.
+- Records past `-retention` (default 30 days) are deleted once a day. `0` keeps
+  them forever.
+- The SQLite file is created `0600`.
 
-## 설정
+## Configuration
 
-설정은 `/opt/ovpnmon/etc/ovpnmon.conf`에 모여 있습니다. 키 이름은 플래그 이름과
-같아서 `ovpnmon -help`에 나오는 것은 무엇이든 파일에도 쓸 수 있습니다.
+Configuration lives in `/opt/ovpnmon/etc/ovpnmon.conf`. Key names match flag
+names, so anything shown by `ovpnmon -help` can also go in the file.
 
 ```ini
 iface  = tun0
@@ -505,245 +540,269 @@ name-ttl         = 30m
 log-level        = info
 ```
 
-우선순위는 **커맨드라인 > 설정 파일 > 기본값**입니다. 임시로 하나만 바꿔 실행하려면
-플래그를 주면 되고, 파일을 고칠 필요가 없습니다.
+Precedence is **command line > config file > defaults**. To change one thing
+temporarily, pass a flag; you do not need to edit the file.
 
-**오타는 조용히 무시되지 않고 기동 실패입니다.** 설정 파일의 오타는 그러지 않으면
-"왜 이 설정이 안 먹지"를 한참 뒤에 발견하게 됩니다.
+**A typo is not silently ignored — it fails startup.** Otherwise a typo in the
+config file means discovering "why isn't this setting taking effect" much later.
 
 ```
 $ ovpnmon -config /opt/ovpnmon/etc/ovpnmon.conf
 ovpnmon: reading config: /opt/ovpnmon/etc/ovpnmon.conf:24: unknown setting "retenshun"
 ```
 
-전체 옵션은 `ovpnmon -help`에 있습니다.
+The full set of options is in `ovpnmon -help`.
 
-`listen`의 기본값은 루프백입니다. 외부에 노출한다면 앞단에 인증을 두십시오 —
-이 엔드포인트는 사용자들의 접속 내역 전체를 담고 있습니다.
+`listen` defaults to loopback. If you expose it externally, put authentication
+in front — this endpoint holds every user's connection history.
 
-## 한계
+## Limitations
 
-- **IPv4만 추적합니다.** IPv6 플로우는 집계되지 않습니다 (DNS AAAA 응답은 캐시에 기록됨).
-- **QUIC / HTTP3** (UDP 443)의 ClientHello는 암호화되어 있어 SNI를 볼 수 없습니다.
-  이 트래픽은 DNS 응답으로만 이름이 붙습니다.
-- **Encrypted Client Hello(ECH)** 를 쓰는 연결은 SNI가 보이지 않습니다.
-- **DoH/DoT**를 쓰는 클라이언트는 DNS 신호도 남기지 않습니다. 목적지는 IP로만 남습니다.
-- 페이로드 스냅샷은 **512바이트**이며, 그보다 뒤에 있는 SNI 확장은 잘립니다
-  (`probe.truncated` 카운터로 관측 가능). ClientHello가 여러 세그먼트로 쪼개진 경우도
-  첫 세그먼트만 봅니다.
-- 플로우 맵은 65536개 엔트리의 LRU입니다. 초과분은 커널이 오래된 것부터 밀어냅니다.
+- **IPv4 only.** IPv6 flows are not aggregated (DNS AAAA replies are still cached).
+- **QUIC / HTTP3** (UDP 443) ClientHellos are encrypted, so the SNI is not
+  visible. Such traffic is named only from DNS replies.
+- Connections using **Encrypted Client Hello (ECH)** hide the SNI.
+- Clients using **DoH/DoT** leave no DNS signal either. Their destinations
+  remain IP-only.
+- The payload snapshot is **512 bytes**; an SNI extension beyond that is
+  truncated (observable via the `probe.truncated` counter). If a ClientHello is
+  split across segments, only the first is seen.
+- The flow map is a 65536-entry LRU. The kernel evicts the oldest entries above
+  that.
 
-## 프라이버시
+## Privacy
 
-이 도구는 VPN 사용자가 방문하는 호스트명 단위의 접속 기록을 만듭니다.
-운영 주체에게 그 권한이 있는지, 사용자에게 고지가 되었는지, 보관 기간이 적절한지는
-배포 전에 확인해야 할 사항입니다. 페이로드 본문은 저장하지 않습니다.
+This tool produces a per-hostname record of the hosts VPN users visit. Whether
+the operator has the authority to do so, whether users have been notified, and
+whether the retention period is appropriate are things to settle before
+deployment. Payload bodies are never stored.
 
-`-store` 없이 쓰면 모든 것이 메모리에만 있고 재시작과 함께 사라집니다. `-store`를 켜는
-순간부터는 되돌릴 수 없는 기록이 남으므로, **켜기 전에 보관 기간을 정하십시오**
-(`-retention`, 기본 30일). 여기에는 사용자의 실제 접속 IP도 포함되며, 이는 목적지보다
-민감한 정보입니다 — 소재지와 ISP가 드러납니다.
+Used without `-store`, everything is in memory only and disappears on restart.
+From the moment you enable `-store`, an irreversible record is kept, so **decide
+the retention period before turning it on** (`-retention`, default 30 days). This
+also includes users' real connection IPs, which are more sensitive than
+destinations — they reveal location and ISP.
 
-## 구조
+## Structure
 
 ```
-bpf/ovpnmon.bpf.c        eBPF 데이터플레인 (플로우 집계 + 페이로드 샘플링)
-internal/ebpfx/          프로그램 로드·TCX 부착·맵 접근
-internal/mgmt/           OpenVPN management 프로토콜 클라이언트
-internal/resolver/       DNS/SNI/HTTP 파서와 이름 캐시
-internal/collector/      세 소스를 합쳐 스냅샷 생성
-internal/api/            HTTP·WebSocket·대시보드
+bpf/ovpnmon.bpf.c        eBPF dataplane (flow aggregation + payload sampling)
+internal/ebpfx/          program load, TCX attach, map access
+internal/mgmt/           OpenVPN management-protocol client
+internal/resolver/       DNS/SNI/HTTP parsers and the name cache
+internal/geoip/          MaxMind GeoLite2 lookups for destination geolocation
+internal/collector/      joins the sources into a snapshot
+internal/api/            HTTP, WebSocket, dashboard
 internal/metrics/        Prometheus exporter
-deploy/                  서버 구축 스크립트, systemd 유닛, 테스트 클라이언트
+deploy/                  server setup scripts, systemd unit, test client
 ```
 
-`bpf/ovpnmon.bpf.c`를 수정한 뒤에는 `make generate`로 재컴파일해야 합니다.
-컴파일된 오브젝트는 바이너리에 임베드되므로, 배포 대상에는 clang이나 커널 헤더가 필요 없습니다.
+After editing `bpf/ovpnmon.bpf.c` you must recompile with `make generate`. The
+compiled object is embedded in the binary, so the deployment target needs
+neither clang nor kernel headers.
 
-## 개발
+## Development
 
 ```bash
-make generate     # eBPF 재컴파일 + Go 바인딩 생성
-make vet          # go vet + gofmt 확인
-make test-root    # 커널 verifier 테스트 포함 전체 테스트
+make generate     # recompile eBPF + regenerate Go bindings
+make vet          # go vet + gofmt check
+make test-root    # full tests including kernel-verifier tests
 ```
 
-## 로그인
+## Login
 
-기본값은 **인증 없음**입니다. 대시보드를 루프백 밖으로 노출한다면 반드시 켜십시오 —
-이 화면은 모든 사용자의 접속 내역을 담고 있습니다.
+The default is **no authentication**. If you expose the dashboard beyond
+loopback, turn it on without fail — this screen holds every user's connection
+history.
 
 ```bash
-ovpnmon -hash-password '<password>'      # 해시 출력
+ovpnmon -hash-password '<password>'      # print a hash
 ```
 
-출력된 값을 `/opt/ovpnmon/etc/ovpnmon.conf`에 넣고 재시작합니다:
+Put the printed value in `/opt/ovpnmon/etc/ovpnmon.conf` and restart:
 
 ```ini
 auth-user          = admin
 auth-password-hash = $2a$10$...
-metrics-token      = <긴 무작위 문자열>
+metrics-token      = <long random string>
 ```
 
-- 세션은 **메모리에만** 있습니다. ovpnmon을 재시작하면 전원 로그아웃되고, 훔친 쿠키도
-  같이 무효가 됩니다
-- 쿠키는 `HttpOnly` + `SameSite=Strict`입니다. 다른 사이트가 운영자 쿠키로 메모를
-  수정하는 것을 막습니다
-- `/healthz`만 공개입니다 (로드밸런서 헬스체크). 나머지 `/api/*`와 `/metrics`는 세션이
-  필요합니다
-- **Prometheus는 브라우저 세션이 없으므로** `metrics-token`을 씁니다.
-  `make observability-config`가 이 값을 스크레이프 설정으로 복사합니다. 토큰 없이 인증만
-  켜면 Prometheus가 401을 받아 대시보드가 빈 채로 남습니다
+- Sessions are **in memory only**. Restarting ovpnmon logs everyone out and
+  invalidates stolen cookies along with them
+- Cookies are `HttpOnly` + `SameSite=Strict`. This stops another site from using
+  an operator's cookie to edit notes
+- Only `/healthz` is public (for load-balancer health checks). The rest of
+  `/api/*` and `/metrics` require a session
+- **Prometheus has no browser session**, so it uses `metrics-token`. `make
+  observability-config` copies this value into the scrape config. If you enable
+  auth without a token, Prometheus gets a 401 and the dashboard stays empty
 
-TLS는 아직 없습니다. 비밀번호가 평문으로 오가므로, 신뢰할 수 없는 망에 노출한다면 앞단에
-리버스 프록시로 HTTPS를 두십시오.
+There is no TLS yet. Passwords travel in cleartext, so if you expose this on an
+untrusted network, put HTTPS in front with a reverse proxy.
 
-## 인증서 관리
+## Certificate management
 
-기본은 **꺼져 있습니다.** easyrsa를 root로 실행하고 개인키를 내보내므로, 트래픽을 보는
-것과는 권한의 성격이 다릅니다.
+Off by default. It runs easyrsa as root and exports private keys, so it is a
+different kind of privilege from merely watching traffic.
 
 ```ini
 manage-certificates = true
 server-conf = /etc/openvpn/server/server.conf
-vpn-host = vpn.example.com      # 생성되는 프로파일이 접속할 주소
+vpn-host = vpn.example.com      # address the generated profile connects to
 ```
 
-Users 탭 상단에서 발급하고, 각 사용자 옆에서 **Profile** 다운로드와 **Revoke**를 합니다.
-전부 감사 이력에 남습니다 (`cert_issue`, `cert_revoke`, `profile_download`).
+Issue from the top of the Users tab, and **Profile** download and **Revoke**
+next to each user. All of it is recorded in the audit history (`cert_issue`,
+`cert_revoke`, `profile_download`).
 
-### 폐기가 실제로 효력을 가지려면
+### For revocation to actually take effect
 
-`server.conf`에 **`crl-verify`가 없으면 폐기는 아무것도 막지 못합니다.** 폐기된 사용자가
-그대로 재접속합니다. 실제로 확인한 결과입니다:
+**If `server.conf` has no `crl-verify` line, revocation blocks nothing.** A
+revoked user simply reconnects. Verified in practice:
 
 ```
-crl-verify 없음  → 폐기 후에도 접속 성공
-crl-verify 있음  → VERIFY ERROR: certificate revoked: CN=testuser
+without crl-verify  → connects successfully even after revocation
+with crl-verify     → VERIFY ERROR: certificate revoked: CN=testuser
 ```
 
-폐기 응답이 이 상태를 알려주고, `make preflight`도 검사합니다.
+The revoke response tells you this state, and `make preflight` checks it too.
 
 ```json
 {"revoked": true, "crl_enforced": false, "still_online": true,
  "advice": "The server config has no crl-verify line, so this revocation is not enforced..."}
 ```
 
-이미 접속 중인 사용자는 폐기해도 **그 연결이 끊기지 않습니다** — CRL은 접속할 때 확인합니다.
-즉시 적용하려면 Disconnect를 함께 누르십시오.
+Revoking a currently-connected user **does not drop that connection** — the CRL
+is checked at connect time. To apply it immediately, also press Disconnect.
 
-> **`.ovpn`에는 클라이언트 개인키가 들어 있습니다.** TLS가 없는 지금은 그 키가 평문으로
-> 네트워크를 건너갑니다. 신뢰할 수 없는 망에서 쓰지 마십시오.
+> **A `.ovpn` contains the client private key.** With no TLS today, that key
+> crosses the network in cleartext. Do not use this over an untrusted network.
 
-`manage-certificates`를 켜면 systemd 유닛이 `/etc/openvpn`에 쓸 수 있어야 합니다
-(`ReadWritePaths`에 포함되어 있습니다). 끄면 그 경로는 쓰이지 않습니다.
+Turning on `manage-certificates` requires the systemd unit to be able to write
+to `/etc/openvpn` (it is included in `ReadWritePaths`). With it off, that path is
+never written.
 
-## 접속 강제 종료
+## Force-disconnect
 
-Users 탭에서 접속 중인 사용자 옆의 **Disconnect** 버튼으로 연결을 끊습니다.
-`client-kill <CID>`를 보내며, 공통 이름이 아니라 client id를 쓰는 이유는 같은 이름의
-인증서를 여러 기기가 들고 있을 수 있기 때문입니다.
+From the Users tab, the **Disconnect** button next to a connected user drops the
+connection. It sends `client-kill <CID>`, using the client id rather than the
+common name because several devices may hold a certificate with the same name.
 
-> **이건 차단이 아니라 연결 종료입니다.** 인증서가 그대로 유효하므로, 재접속하도록
-> 설정된 클라이언트(기본값)는 몇 초 안에 돌아옵니다. 실제로 막으려면 인증서를 폐기해야
-> 합니다. 확인 대화상자에도 이 내용이 나옵니다.
+> **This is a disconnect, not a block.** The certificate stays valid, so a client
+> configured to reconnect (the default) comes back within seconds. To actually
+> stop it, revoke the certificate. The confirmation dialog says as much.
 
-누가 언제 누구를 끊었는지는 활동 피드와 감사 이력에 `kill`로 남습니다:
+Who disconnected whom, and when, is recorded as `kill` in the activity feed and
+the audit history:
 
 ```
 02:09:05  kill  bob  disconnected by admin
 ```
 
-## CloudStack 연동 (선택)
+## GeoIP (optional)
 
-`cloudstack-url`과 API 키를 설정하면, 사용자와 목적지에 CloudStack이 아는 이름이
-함께 표시됩니다 — 어떤 계정인지, 어떤 Isolated 네트워크를 갖고 있는지, 그리고 접속한
-주소가 누구의 VM인지.
+Point `-geoip-db` at a MaxMind GeoLite2 database and public destinations gain a
+location on the dashboard — a country (and, with the City edition, a city). The
+lookup is fully offline: the file is read locally and no address is ever sent to
+a third party.
 
-```
+```ini
 # ovpnmon.conf
-cloudstack-url = http://cloudstack:8080/client/api
-cloudstack-api-key = <api key>
-cloudstack-secret-key = <secret key>
+geoip-db = /var/lib/ovpnmon/GeoLite2-City.mmdb
 ```
 
-설정하지 않으면 ovpnmon은 CloudStack을 전혀 호출하지 않고, 화면도 지금과 같습니다.
-읽기 전용 호출만 하므로 **읽기 전용 계정으로 키를 발급하세요.**
+Download `GeoLite2-City.mmdb` (or `GeoLite2-Country.mmdb`) from MaxMind with a
+free account; ovpnmon never fetches it for you. Without it, destinations are
+shown exactly as observed. Private and VPN-internal addresses are never looked
+up — they have no meaningful geography.
 
-인증서 CN은 CloudStack 사용자명(또는 계정명)과 대조됩니다. 사용자명은 도메인 안에서만
-유일하므로, 여러 도메인에 같은 이름이 있으면 **어느 쪽으로도 해석하지 않고** 후보를
-보여줍니다 — 하나를 골랐다가는 어떤 사람의 트래픽이 다른 테넌트 것으로 기록됩니다.
-그럴 때는 `eng.admin`처럼 도메인을 한정한 이름으로 인증서를 발급하면 됩니다.
+> **Identity sources are pluggable.** The core depends only on the
+> `enrich.Provider` interface (`internal/enrich`), which can annotate a user or a
+> destination with who they are in your own infrastructure. No provider ships in
+> this repository; the interface is the extension point for your own.
 
-매핑 규칙과 캐시 동작은 **[docs/cloudstack.md](docs/cloudstack.md)** 에 정리했습니다.
+## Temporarily blocking a user
 
-## 사용자 임시 차단
+From the `⋮` menu on the Users tab, **Block temporarily…** blocks a user for a
+chosen duration and reason. The current session is dropped and reconnection is
+refused until expiry.
 
-Users 탭의 `⋮` 메뉴에서 **Block temporarily…** 로 기간과 사유를 정해 차단합니다.
-현재 세션이 끊기고, 만료까지 재접속이 거부됩니다.
+> **The certificate stays valid.** If a key has leaked, use revocation, not a
+> block. A block is the equivalent of "keep them out until Friday", and it
+> expires on its own.
 
-> **인증서는 유효한 상태로 남습니다.** 키가 유출된 경우라면 차단이 아니라 폐기를
-> 써야 합니다. 차단은 "금요일까지 막아둬"에 해당하고, 스스로 만료됩니다.
-
-`client-config-dir`에 `disable` 한 줄짜리 파일을 두는 OpenVPN 자체의 기능을 씁니다.
-OpenVPN이 접속마다 그 디렉터리를 다시 읽으므로 **차단에도 해제에도 재시작이
-필요 없습니다**. 만료는 ovpnmon이 15초마다 대조해 처리합니다.
+It uses OpenVPN's own feature of placing a one-line `disable` file in
+`client-config-dir`. OpenVPN re-reads that directory on every connection, so
+**neither blocking nor unblocking needs a restart.** Expiry is handled by
+ovpnmon checking every 15 seconds.
 
 ```
-02:30:38  block    boan  blocked by admin until 2026-08-05T02:32:08Z: 오용 조사 중
-02:32:08  (만료)   block expired  common_name=boan
+02:30:38  block    boan  blocked by admin until 2026-08-05T02:32:08Z: investigating misuse
+02:32:08  (expiry) block expired  common_name=boan
 ```
 
-차단된 사용자는 접속 중이 아니어도 목록 맨 위에 붉게 표시됩니다 — 차단당했기 때문에
-오프라인인 것이므로, 접속 여부로만 정렬하면 방금 조치한 행이 목록 아래로 가라앉습니다.
+A blocked user is shown in red at the top of the list even when not connected —
+they are offline *because* they were blocked, so sorting only by connection
+status would sink the row you just acted on to the bottom.
 
-쓰려면 `server.conf`에 다음이 있어야 하고, 추가하려면 OpenVPN 재시작이 한 번
-필요합니다(`preflight.sh`가 확인해 줍니다):
+To use it, `server.conf` must have the following, and adding it needs one
+OpenVPN restart (`preflight.sh` checks for it):
 
 ```
 client-config-dir /etc/openvpn/ccd
 ```
 
-결정이 어디서 내려지는지, ovpnmon이 죽으면 어떻게 되는지, 손으로 푸는 방법은
-**[docs/blocking.md](docs/blocking.md)** 에 정리해 두었습니다.
+Where the decision is made, what happens if ovpnmon dies, and how to unblock by
+hand are written up in **[docs/blocking.md](docs/blocking.md)**.
 
-## 라이브 갱신 제어
+## Live-update control
 
-헤더의 컨트롤로 화면이 다시 그려지는 속도를 조절합니다.
+The header controls adjust how fast the screen is redrawn.
 
 | | |
 |---|---|
-| **⏸ / ▶** | 일시정지. 테이블을 읽거나 값을 복사하는 동안 화면이 바뀌지 않습니다 |
-| **주기** | 2s · 5s · 10s · 30s (기본 5s) |
-| **↻** | 즉시 새로고침 (일시정지 상태였다면 해제됩니다) |
+| **⏸ / ▶** | Pause. The table does not change while you read it or copy a value |
+| **Interval** | 2s · 5s · 10s · 30s (default 5s) |
+| **↻** | Refresh now (releases pause if it was paused) |
+| **🖥 / ☀️ / 🌙** | Theme: system → light → dark. The choice is saved in the browser |
 
-WebSocket 수신 자체는 멈추지 않습니다 — **일시정지 중 발생한 이벤트는 버퍼에 쌓였다가
-재개할 때 한꺼번에 표시**되므로 활동 기록에 구멍이 생기지 않습니다. 서버 부하도 그대로이고,
-바뀌는 것은 브라우저가 DOM을 다시 그리는 빈도뿐입니다.
+The WebSocket receiver itself never stops — **events that occur while paused are
+buffered and shown all at once on resume**, so there is no hole in the activity
+record. Server load is unchanged too; the only thing that changes is how often
+the browser redraws the DOM.
 
-페이지를 처음 열 때는 스로틀을 건너뜁니다. 서버가 접속 직후 스냅샷과 최근 이벤트를 한꺼번에
-보내는데, 그것까지 지연시키면 첫 화면이 한동안 비어 보이기 때문입니다.
+The theme follows your operating system by default; the toggle lets you pin it
+to light or dark, and the choice persists across reloads.
 
-## Users 탭
+The throttle is skipped when the page first opens. The server sends the snapshot
+and recent events all at once right after connecting, and delaying that would
+leave the first screen blank for a while.
 
-사용자 목록은 easy-rsa `index.txt`(발급된 전체 사용자와 인증서 상태), 이력 DB(접속 횟수와
-누적 트래픽), management(현재 접속)를 합쳐 만듭니다. **접속이 끊겨도 목록에서 사라지지
-않습니다.**
+## Users tab
 
-PKI 경로는 관용적 위치에서 자동 탐지하며, 다른 곳에 있으면 지정합니다:
+The user list is built by joining easy-rsa `index.txt` (all issued users and
+their certificate status), the history DB (connection count and cumulative
+traffic) and management (currently connected). **A user does not disappear from
+the list when they disconnect.**
+
+The PKI path is auto-detected from the conventional locations, and you can
+specify it if it is elsewhere:
 
 ```ini
 pki-index = /path/to/pki/index.txt
-server-cn = server              # 서버 인증서는 사용자 목록에서 제외
+server-cn = server              # exclude the server certificate from the user list
 ```
 
-PKI를 읽지 못해도 동작합니다 — 목록이 "접속한 적 있는 사용자"로 좁아집니다.
+It works even if it cannot read the PKI — the list narrows to "users who have
+connected before".
 
-사용자를 펼치면 **메모**를 남길 수 있습니다 (이력 DB에 저장, 2000자). 이것이 유일한 쓰기
-엔드포인트입니다 — 앞단에 인증이 없다면 네트워크에서 닿는 누구나 수정할 수 있으니, 대시보드를
-외부에 노출한다면 감안하십시오. 메모로 할 수 있는 일은 텍스트 저장뿐이고, 접속을 끊거나
-설정을 바꾸지는 못합니다.
+Expanding a user lets you leave a **note** (stored in the history DB, 2000
+characters). This is the only write endpoint — if there is no auth in front,
+anyone who can reach it on the network can edit it, so account for that if you
+expose the dashboard externally. All a note can do is store text; it cannot
+disconnect anyone or change settings.
 
-트래픽은 **현재 속도**(큰 숫자)와 **세션 시작 이후 누적**(작은 숫자)을 함께 보여줍니다.
-`tunnel_bytes_*`는 OpenVPN이 세는 암호화된 바이트, `flow_*`는 프로브가 터널 내부에서 본
-평문 바이트로, 후자가 목적지별로 귀속됩니다.
+Traffic shows both the **current rate** (the large number) and the **cumulative
+since the session started** (the small number). `tunnel_bytes_*` is the
+encrypted bytes OpenVPN counts, `flow_*` is the cleartext bytes the probe sees
+inside the tunnel, and it is the latter that is attributed per destination.
